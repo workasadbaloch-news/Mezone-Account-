@@ -1,0 +1,555 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Mezone shopper account personal information and referral invite metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Full name or display name of the Mezone shopper.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified account email address.",
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "description": "Optional contact phone number.",
+          "maxLength": 32
+        },
+        "region": {
+          "type": "string",
+          "description": "Preferred shopping region and currency.",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["google", "apple", "facebook", "yahoo", "email"],
+          "description": "Primary authentication provider used to create the Mezone account."
+        },
+        "inviteCode": {
+          "type": "string",
+          "description": "Personal Mezone invite code to share with new users.",
+          "minLength": 4,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9_-]+$"
+        },
+        "invitedByCode": {
+          "type": "string",
+          "description": "Optional invite code used when creating this account.",
+          "maxLength": 24
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Read-only profile DP URL fetched from Firebase Auth provider.",
+          "maxLength": 500
+        },
+        "birthDate": {
+          "type": "string",
+          "description": "User date of birth in YYYY-MM-DD format.",
+          "maxLength": 16
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["", "Male", "Female", "Other", "Prefer not to say"],
+          "description": "Shopper gender selection."
+        },
+        "countryName": {
+          "type": "string",
+          "description": "Country name for the shopper profile.",
+          "maxLength": 60
+        },
+        "walletBalancePkr": {
+          "type": "number",
+          "description": "Available Mezone reward balance in PKR."
+        },
+        "accountBonusClaimed": {
+          "type": "boolean",
+          "description": "True once the 100 PKR account creation bonus is credited."
+        },
+        "profileBonusClaimed": {
+          "type": "boolean",
+          "description": "True once the 50 PKR verify account & complete profile bonus is claimed."
+        },
+        "buyTwoBonusClaimed": {
+          "type": "boolean",
+          "description": "True once the 300 PKR buy 2 products bonus is credited."
+        },
+        "approvedProductsCount": {
+          "type": "number",
+          "description": "Total Admin-approved purchased products for this user."
+        },
+        "loginTokens": {
+          "type": "number",
+          "description": "Collected daily login tokens toward 1,000-token claim (50 PKR)."
+        },
+        "dailyLoginDays": {
+          "type": "number",
+          "description": "Number of daily login check-ins completed in current 30-day cycle (0-30)."
+        },
+        "lastCheckInDate": {
+          "type": "string",
+          "description": "YYYY-MM-DD date string of last daily login token collection.",
+          "maxLength": 16
+        },
+        "totalWithdrawnPkr": {
+          "type": "number",
+          "description": "Total PKR withdrawn across submitted requests."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last account update."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "email",
+        "phone",
+        "region",
+        "provider",
+        "inviteCode",
+        "invitedByCode",
+        "walletBalancePkr",
+        "accountBonusClaimed",
+        "profileBonusClaimed",
+        "buyTwoBonusClaimed",
+        "approvedProductsCount",
+        "loginTokens",
+        "dailyLoginDays",
+        "lastCheckInDate",
+        "totalWithdrawnPkr",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InviteCode": {
+      "title": "InviteCode",
+      "description": "Non-PII lookup index mapping an invite code to its owner UID.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9_-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["code", "ownerUid", "createdAt"]
+    },
+    "ReferralRecord": {
+      "title": "ReferralRecord",
+      "description": "Tracks an invited user's 10-product purchase qualification toward the 500 PKR referral acceptance.",
+      "type": "object",
+      "properties": {
+        "inviteeUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "inviteeName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "inviteeEmail": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "inviterUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "inviterCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9_-]+$"
+        },
+        "approvedProductCount": {
+          "type": "number",
+          "description": "Number of approved purchased products by the invited user."
+        },
+        "requiredProductCount": {
+          "type": "number",
+          "description": "Required approved product purchases (10)."
+        },
+        "rewardPkr": {
+          "type": "number",
+          "description": "Referral reward in PKR (500)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted"],
+          "description": "Accepted once approvedProductCount reaches 10."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "inviteeUid",
+        "inviteeName",
+        "inviteeEmail",
+        "inviterUid",
+        "inviterCode",
+        "approvedProductCount",
+        "requiredProductCount",
+        "rewardPkr",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OrderProof": {
+      "title": "OrderProof",
+      "description": "Purchase proof submitted by a shopper for Admin verification toward the 10-product referral rule.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "marketplace": {
+          "type": "string",
+          "enum": ["Temu", "Amazon"]
+        },
+        "productTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "orderReference": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Number of products in the order (1 to 10)."
+        },
+        "proofNotes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "proofAttachment": {
+          "type": "string",
+          "description": "Required compressed order screenshot data URL.",
+          "minLength": 20,
+          "maxLength": 70000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "adminNote": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "userName",
+        "userEmail",
+        "marketplace",
+        "productTitle",
+        "orderReference",
+        "quantity",
+        "proofNotes",
+        "proofAttachment",
+        "status",
+        "adminNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AffiliateProduct": {
+      "title": "AffiliateProduct",
+      "description": "Temu or Amazon affiliate product published by Mezone Admin for direct Shop Now shopping.",
+      "type": "object",
+      "properties": {
+        "productCode": {
+          "type": "string",
+          "description": "Unique Mezone product reference code.",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "marketplace": { "type": "string", "enum": ["Temu", "Amazon"] },
+        "category": {
+          "type": "string",
+          "enum": ["Tech & Audio", "Home & Living", "Travel & Carry", "Beauty & Care", "Everyday Deals"]
+        },
+        "price": { "type": "number" },
+        "compareAtPrice": { "type": "number" },
+        "affiliateUrl": { "type": "string", "minLength": 8, "maxLength": 500 },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "productCode", "title", "marketplace", "category", "price", "compareAtPrice",
+        "affiliateUrl", "imageUrl", "description", "published", "createdBy", "createdAt", "updatedAt"
+      ]
+    },
+    "LikedItem": {
+      "title": "LikedItem",
+      "description": "A Temu or Amazon affiliate product liked by a Mezone shopper.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "marketplace": { "type": "string", "enum": ["Temu", "Amazon"] },
+        "category": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "price": { "type": "number" },
+        "compareAtPrice": { "type": "number" },
+        "affiliateUrl": { "type": "string", "minLength": 8, "maxLength": 500 },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId", "productId", "title", "marketplace", "category",
+        "price", "compareAtPrice", "affiliateUrl", "imageUrl", "createdAt"
+      ]
+    },
+    "AdminMember": {
+      "title": "AdminMember",
+      "description": "Authorized Mezone Admin registry record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 }
+      },
+      "required": ["uid", "email"]
+    },
+    "WithdrawalRequest": {
+      "title": "WithdrawalRequest",
+      "description": "PKR withdrawal request submitted once verified with at least 1,000 PKR balance (5% tax + 2% fee).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "userEmail": { "type": "string", "maxLength": 160 },
+        "bankName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "holderName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "cellNumber": { "type": "string", "minLength": 7, "maxLength": 32 },
+        "amount": { "type": "number" },
+        "taxPkr": { "type": "number" },
+        "feePkr": { "type": "number" },
+        "netAmountPkr": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "adminNote": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId", "userName", "userEmail", "bankName", "holderName", "cellNumber",
+        "amount", "taxPkr", "feePkr", "netAmountPkr", "status", "adminNote", "createdAt", "updatedAt"
+      ]
+    },
+    "AdminSecurityConfig": {
+      "title": "AdminSecurityConfig",
+      "description": "Admin Center security settings including SHA-256 hash of the Admin Login PIN.",
+      "type": "object",
+      "properties": {
+        "pinHash": {
+          "type": "string",
+          "description": "SHA-256 hex digest of the Admin Center Confirm PIN.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["pinHash", "updatedBy", "updatedAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Helpcenter support request submitted by a verified Mezone user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "userEmail": { "type": "string", "maxLength": 160 },
+        "topic": {
+          "type": "string",
+          "enum": [
+            "Shopping & Products",
+            "Order Proof Verification",
+            "Referral Program",
+            "Wallet & Withdraw",
+            "Account Verification"
+          ]
+        },
+        "subject": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "message": { "type": "string", "minLength": 5, "maxLength": 600 },
+        "status": { "type": "string", "enum": ["open", "resolved"] },
+        "adminReply": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+        "required": [
+        "userId", "userName", "userEmail", "topic", "subject",
+        "message", "status", "adminReply", "createdAt", "updatedAt"
+      ]
+    },
+    "HelpcenterFeedback": {
+      "title": "HelpcenterFeedback",
+      "description": "User star rating (1-5) and feedback submitted in Helpcenter (no PII stored).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "rating": { "type": "number", "description": "Star rating from 1 to 5." },
+        "category": {
+          "type": "string",
+          "enum": ["Shopping Experience", "Support Speed", "Rewards & Payouts", "App Design"]
+        },
+        "comment": { "type": "string", "minLength": 3, "maxLength": 500 },
+        "published": { "type": "boolean" },
+        "adminReply": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId", "userName", "rating", "category", "comment",
+        "published", "adminReply", "createdAt", "updatedAt"
+      ]
+    },
+    "SiteBannerConfig": {
+      "title": "SiteBannerConfig",
+      "description": "Admin-managed HTML Banner Ads shown across Mezone pages.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "placementScope": {
+          "type": "string",
+          "enum": ["all", "workspace", "public"]
+        },
+        "topBannerHtml": { "type": "string", "maxLength": 20000 },
+        "bottomBannerHtml": { "type": "string", "maxLength": 20000 },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "enabled", "placementScope", "topBannerHtml", "bottomBannerHtml", "updatedBy", "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private Mezone user personal information, wallet balance, tokens, and invite code."
+    },
+    "/inviteCodes/{code}": {
+      "schema": { "$ref": "#/entities/InviteCode" },
+      "description": "Non-PII invite code ownership map for referral linking."
+    },
+    "/referrals/{inviteeUid}": {
+      "schema": { "$ref": "#/entities/ReferralRecord" },
+      "description": "Referral qualification record tracking 10 approved products for 500 PKR reward."
+    },
+    "/orderProofs/{proofId}": {
+      "schema": { "$ref": "#/entities/OrderProof" },
+      "description": "Customer order proofs submitted for Admin verification."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/AffiliateProduct" },
+      "description": "Published Temu and Amazon affiliate products managed by Admin."
+    },
+    "/likedItems/{likedId}": {
+      "schema": { "$ref": "#/entities/LikedItem" },
+      "description": "Liked Temu and Amazon affiliate products per shopper."
+    },
+    "/withdrawals/{withdrawalId}": {
+      "schema": { "$ref": "#/entities/WithdrawalRequest" },
+      "description": "Verified shopper withdrawal requests (min 1,000 PKR, 5% tax, 2% fee)."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminMember" },
+      "description": "Trusted Admin Center role documents."
+    },
+    "/adminConfig/{docId}": {
+      "schema": { "$ref": "#/entities/AdminSecurityConfig" },
+      "description": "Admin Center security settings (Login PIN SHA-256 hash)."
+    },
+    "/supportTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Helpcenter support tickets submitted by Mezone users."
+    },
+    "/helpcenterFeedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/HelpcenterFeedback" },
+      "description": "Helpcenter star ratings and feedback submitted by verified shoppers."
+    },
+    "/siteConfig/{docId}": {
+      "schema": { "$ref": "#/entities/SiteBannerConfig" },
+      "description": "Public non-PII banner ad HTML configuration edited by Mezone Admin."
+    }
+  }
+}

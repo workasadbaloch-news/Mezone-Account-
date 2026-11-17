@@ -1,0 +1,681 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdminEmail() {
+      return isVerifiedUser() && request.auth.token.email == 'work.asadbaloch804@gmail.com';
+    }
+
+    function isAdmin() {
+      return isAdminEmail() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isNonEmptyString(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    // Entity 1: UserProfile (with PKR Wallet, Bonuses, and 30-Day Daily Login Tokens)
+    function isValidUserProfile(data) {
+      return data.uid is string
+        && isValidId(data.uid)
+        && isNonEmptyString(data.displayName, 80)
+        && isNonEmptyString(data.email, 160)
+        && data.phone is string && data.phone.size() <= 32
+        && data.region is string && data.region.size() >= 2 && data.region.size() <= 40
+        && data.provider in ['google', 'apple', 'facebook', 'yahoo', 'email']
+        && data.inviteCode is string
+        && data.inviteCode.size() >= 4
+        && data.inviteCode.size() <= 24
+        && data.inviteCode.matches('^[A-Z0-9_-]+$')
+        && data.invitedByCode is string && data.invitedByCode.size() <= 24
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
+        && (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 16))
+        && (!('gender' in data) || data.gender in ['', 'Male', 'Female', 'Other', 'Prefer not to say'])
+        && (!('countryName' in data) || (data.countryName is string && data.countryName.size() <= 60))
+        && data.walletBalancePkr is number && data.walletBalancePkr >= 0 && data.walletBalancePkr <= 10000000
+        && data.accountBonusClaimed is bool
+        && data.profileBonusClaimed is bool
+        && data.buyTwoBonusClaimed is bool
+        && data.approvedProductsCount is number && data.approvedProductsCount >= 0 && data.approvedProductsCount <= 10000
+        && data.loginTokens is number && data.loginTokens >= 0 && data.loginTokens <= 10000
+        && data.dailyLoginDays is number && data.dailyLoginDays >= 0 && data.dailyLoginDays <= 30
+        && data.lastCheckInDate is string && data.lastCheckInDate.size() <= 16
+        && data.totalWithdrawnPkr is number && data.totalWithdrawnPkr >= 0 && data.totalWithdrawnPkr <= 10000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 2: InviteCode
+    function isValidInviteCode(data) {
+      return data.code is string
+        && data.code.size() >= 4
+        && data.code.size() <= 24
+        && data.code.matches('^[A-Z0-9_-]+$')
+        && data.ownerUid is string
+        && isValidId(data.ownerUid)
+        && data.createdAt is timestamp;
+    }
+
+    // Entity 3: ReferralRecord (1 user = 500 PKR after 10 approved products)
+    function isValidReferralRecord(data) {
+      return data.inviteeUid is string
+        && isValidId(data.inviteeUid)
+        && isNonEmptyString(data.inviteeName, 80)
+        && (!('inviteeEmail' in data) || isNonEmptyString(data.inviteeEmail, 160))
+        && data.inviterUid is string
+        && isValidId(data.inviterUid)
+        && data.inviterUid != data.inviteeUid
+        && data.inviterCode is string
+        && data.inviterCode.size() >= 4
+        && data.inviterCode.size() <= 24
+        && data.inviterCode.matches('^[A-Z0-9_-]+$')
+        && data.approvedProductCount is number && data.approvedProductCount >= 0 && data.approvedProductCount <= 1000
+        && data.requiredProductCount == 10
+        && data.rewardPkr == 500
+        && data.status in ['pending', 'accepted']
+        && (data.status == 'pending' || data.approvedProductCount >= 10)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 4: OrderProof
+    function isValidOrderProof(data) {
+      return data.userId is string
+        && isValidId(data.userId)
+        && isNonEmptyString(data.userName, 80)
+        && isNonEmptyString(data.userEmail, 160)
+        && data.marketplace in ['Temu', 'Amazon']
+        && isNonEmptyString(data.productTitle, 140)
+        && data.orderReference is string && data.orderReference.size() >= 3 && data.orderReference.size() <= 64
+        && data.quantity is number && data.quantity >= 1 && data.quantity <= 10
+        && isNonEmptyString(data.proofNotes, 300)
+        && data.proofAttachment is string && data.proofAttachment.size() >= 20 && data.proofAttachment.size() <= 70000
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.adminNote is string && data.adminNote.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 5: AffiliateProduct
+    function isValidAffiliateProduct(data) {
+      return data.productCode is string
+        && data.productCode.size() >= 2
+        && data.productCode.size() <= 32
+        && data.productCode.matches('^[a-zA-Z0-9_\\-]+$')
+        && isNonEmptyString(data.title, 140)
+        && data.marketplace in ['Temu', 'Amazon']
+        && data.category in ['Tech & Audio', 'Home & Living', 'Travel & Carry', 'Beauty & Care', 'Everyday Deals']
+        && data.price is number && data.price > 0
+        && data.compareAtPrice is number && data.compareAtPrice >= 0
+        && data.affiliateUrl is string
+        && data.affiliateUrl.size() >= 8
+        && data.affiliateUrl.size() <= 500
+        && data.affiliateUrl.matches('^https://.*')
+        && isNonEmptyString(data.imageUrl, 500)
+        && isNonEmptyString(data.description, 600)
+        && data.published is bool
+        && data.createdBy is string
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 6: LikedItem
+    function isValidLikedItem(data) {
+      return data.userId is string
+        && data.userId == request.auth.uid
+        && isValidId(data.userId)
+        && isValidId(data.productId)
+        && isNonEmptyString(data.title, 140)
+        && data.marketplace in ['Temu', 'Amazon']
+        && isNonEmptyString(data.category, 60)
+        && data.price is number && data.price > 0
+        && data.compareAtPrice is number && data.compareAtPrice >= 0
+        && data.affiliateUrl is string
+        && data.affiliateUrl.size() >= 8
+        && data.affiliateUrl.size() <= 500
+        && data.affiliateUrl.matches('^https://.*')
+        && isNonEmptyString(data.imageUrl, 500)
+        && data.createdAt is timestamp;
+    }
+
+    // Entity 7: WithdrawalRequest (Min 1,000 PKR, 5% Tax, 2% Fee)
+    function isValidWithdrawalRequest(data) {
+      return data.userId is string
+        && isValidId(data.userId)
+        && isNonEmptyString(data.userName, 80)
+        && isNonEmptyString(data.userEmail, 160)
+        && data.bankName is string && data.bankName.size() >= 2 && data.bankName.size() <= 80
+        && data.holderName is string && data.holderName.size() >= 2 && data.holderName.size() <= 80
+        && data.cellNumber is string && data.cellNumber.size() >= 7 && data.cellNumber.size() <= 32
+        && data.amount is number && data.amount >= 1000 && data.amount <= 1000000
+        && data.taxPkr is number && data.taxPkr >= data.amount * 0.049 && data.taxPkr <= data.amount * 0.051
+        && data.feePkr is number && data.feePkr >= data.amount * 0.019 && data.feePkr <= data.amount * 0.021
+        && data.netAmountPkr is number && data.netAmountPkr >= data.amount * 0.929 && data.netAmountPkr <= data.amount * 0.931
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.adminNote is string && data.adminNote.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 8: AdminSecurityConfig
+    function isValidAdminSecurityConfig(data) {
+      return data.pinHash is string
+        && data.pinHash.size() == 64
+        && data.pinHash.matches('^[a-f0-9]{64}$')
+        && data.updatedBy is string
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 9: SupportTicket (Helpcenter)
+    function isValidSupportTicket(data) {
+      return data.userId is string
+        && isValidId(data.userId)
+        && isNonEmptyString(data.userName, 80)
+        && data.userEmail is string && data.userEmail.size() <= 160
+        && data.topic in [
+          'Shopping & Products',
+          'Order Proof Verification',
+          'Referral Program',
+          'Wallet & Withdraw',
+          'Account Verification'
+        ]
+        && data.subject is string && data.subject.size() >= 3 && data.subject.size() <= 120
+        && data.message is string && data.message.size() >= 5 && data.message.size() <= 600
+        && data.status in ['open', 'resolved']
+        && data.adminReply is string && data.adminReply.size() <= 400
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 10: HelpcenterFeedback (No PII)
+    function isValidHelpcenterFeedback(data) {
+      return data.userId is string
+        && isValidId(data.userId)
+        && isNonEmptyString(data.userName, 80)
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.category in ['Shopping Experience', 'Support Speed', 'Rewards & Payouts', 'App Design']
+        && data.comment is string && data.comment.size() >= 3 && data.comment.size() <= 500
+        && data.published is bool
+        && data.adminReply is string && data.adminReply.size() <= 400
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity 11: SiteBannerConfig (Non-PII HTML Banner Ads)
+    function isValidSiteBannerConfig(data) {
+      return data.enabled is bool
+        && data.placementScope in ['all', 'workspace', 'public']
+        && data.topBannerHtml is string && data.topBannerHtml.size() <= 20000
+        && data.bottomBannerHtml is string && data.bottomBannerHtml.size() <= 20000
+        && data.updatedBy is string
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    // /users/{userId}
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && incoming().keys().hasAll([
+          'uid', 'displayName', 'email', 'phone', 'region',
+          'provider', 'inviteCode', 'invitedByCode',
+          'walletBalancePkr', 'accountBonusClaimed', 'profileBonusClaimed',
+          'buyTwoBonusClaimed', 'approvedProductsCount', 'loginTokens',
+          'dailyLoginDays', 'lastCheckInDate', 'totalWithdrawnPkr',
+          'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'uid', 'displayName', 'email', 'phone', 'region',
+          'provider', 'inviteCode', 'invitedByCode',
+          'photoUrl', 'birthDate', 'gender', 'countryName',
+          'walletBalancePkr', 'accountBonusClaimed', 'profileBonusClaimed',
+          'buyTwoBonusClaimed', 'approvedProductsCount', 'loginTokens',
+          'dailyLoginDays', 'lastCheckInDate', 'totalWithdrawnPkr',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().walletBalancePkr == 100
+        && incoming().accountBonusClaimed == true
+        && incoming().profileBonusClaimed == false
+        && incoming().buyTwoBonusClaimed == false
+        && incoming().approvedProductsCount == 0
+        && incoming().loginTokens == 0
+        && incoming().dailyLoginDays == 0
+        && incoming().lastCheckInDate == ''
+        && incoming().totalWithdrawnPkr == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().provider == existing().provider
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(userId)
+            && incoming().email == request.auth.token.email
+            && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt'])) ||
+          (incoming().email == existing().email && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'walletBalancePkr', 'buyTwoBonusClaimed', 'approvedProductsCount', 'updatedAt'
+          ])) ||
+          (isOwner(userId) && (
+            // Legacy wallet/invite backfill for pre-existing users
+            (!('walletBalancePkr' in existing())
+              && incoming().walletBalancePkr == 100
+              && incoming().accountBonusClaimed == true
+              && incoming().profileBonusClaimed == false
+              && incoming().buyTwoBonusClaimed == false
+              && incoming().approvedProductsCount == 0
+              && incoming().loginTokens == 0
+              && incoming().dailyLoginDays == 0
+              && incoming().lastCheckInDate == ''
+              && incoming().totalWithdrawnPkr == 0
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'inviteCode', 'invitedByCode',
+                'walletBalancePkr', 'accountBonusClaimed', 'profileBonusClaimed',
+                'buyTwoBonusClaimed', 'approvedProductsCount', 'loginTokens',
+                'dailyLoginDays', 'lastCheckInDate', 'totalWithdrawnPkr', 'updatedAt'
+              ])) ||
+            (
+              incoming().inviteCode == existing().inviteCode && (
+                // Action: Update Personal Info (phone requires country code + without leading 0)
+                ((incoming().phone == '' || incoming().phone.matches('^\\+[1-9][0-9]{6,15}$'))
+                  && incoming().diff(existing()).affectedKeys().hasOnly([
+                    'displayName', 'phone', 'region', 'birthDate', 'gender', 'countryName', 'updatedAt'
+                  ])) ||
+                // Action: Sync read-only Provider Profile DP URL
+                incoming().diff(existing()).affectedKeys().hasOnly(['photoUrl', 'updatedAt']) ||
+                // Action: Link Invite Code once
+                (existing().invitedByCode == '' && incoming().diff(existing()).affectedKeys().hasOnly(['invitedByCode', 'updatedAt'])) ||
+                // Action: Claim 50 PKR Verify & Complete Profile Bonus
+                (existing().profileBonusClaimed == false
+                  && incoming().profileBonusClaimed == true
+                  && existing().phone.size() >= 7
+                  && incoming().walletBalancePkr == existing().walletBalancePkr + 50
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['profileBonusClaimed', 'walletBalancePkr', 'updatedAt'])) ||
+                // Action: Daily Login Token Check-in (30 days -> 1,000 tokens)
+                (incoming().lastCheckInDate != existing().lastCheckInDate
+                  && incoming().lastCheckInDate.size() == 10
+                  && existing().dailyLoginDays < 30
+                  && incoming().dailyLoginDays == existing().dailyLoginDays + 1
+                  && (incoming().loginTokens - existing().loginTokens) >= 33
+                  && (incoming().loginTokens - existing().loginTokens) <= 34
+                  && incoming().loginTokens <= 1000
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['dailyLoginDays', 'loginTokens', 'lastCheckInDate', 'updatedAt'])) ||
+                // Action: Claim 1,000 Tokens -> 50 PKR
+                (existing().loginTokens >= 1000
+                  && incoming().loginTokens == existing().loginTokens - 1000
+                  && incoming().dailyLoginDays == 0
+                  && incoming().walletBalancePkr == existing().walletBalancePkr + 50
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['loginTokens', 'dailyLoginDays', 'walletBalancePkr', 'updatedAt'])) ||
+                // Action: Withdraw balance deduction (min 1,000 PKR)
+                (existing().walletBalancePkr >= 1000
+                  && (existing().walletBalancePkr - incoming().walletBalancePkr) >= 1000
+                  && incoming().totalWithdrawnPkr == existing().totalWithdrawnPkr + (existing().walletBalancePkr - incoming().walletBalancePkr)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['walletBalancePkr', 'totalWithdrawnPkr', 'updatedAt']))
+              )
+            )
+          ))
+        )));
+      allow delete: if isValidId(userId)
+        && isOwner(userId)
+        && !isAdminEmail()
+        && existing().email != 'work.asadbaloch804@gmail.com';
+    }
+
+    // /inviteCodes/{code}
+    match /inviteCodes/{code} {
+      allow get: if isSignedIn() && isValidId(code);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(code)
+        && incoming().keys().hasAll(['code', 'ownerUid', 'createdAt'])
+        && incoming().keys().hasOnly(['code', 'ownerUid', 'createdAt'])
+        && isValidInviteCode(incoming())
+        && incoming().code == code
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(code) && existing().ownerUid == request.auth.uid;
+    }
+
+    // /referrals/{inviteeUid}
+    match /referrals/{inviteeUid} {
+      allow get: if isSignedIn() && isValidId(inviteeUid) && (
+        existing().inviteeUid == request.auth.uid ||
+        existing().inviterUid == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.inviterUid == request.auth.uid ||
+        resource.data.inviteeUid == request.auth.uid ||
+        isAdminEmail()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(inviteeUid)
+        && inviteeUid == request.auth.uid
+        && incoming().keys().hasAll([
+          'inviteeUid', 'inviteeName', 'inviteeEmail', 'inviterUid', 'inviterCode',
+          'approvedProductCount', 'requiredProductCount', 'rewardPkr',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'inviteeUid', 'inviteeName', 'inviteeEmail', 'inviterUid', 'inviterCode',
+          'approvedProductCount', 'requiredProductCount', 'rewardPkr',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidReferralRecord(incoming())
+        && incoming().inviteeUid == request.auth.uid
+        && incoming().approvedProductCount == 0
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/inviteCodes/$(incoming().inviterCode))
+        && get(/databases/$(database)/documents/inviteCodes/$(incoming().inviterCode)).data.ownerUid == incoming().inviterUid;
+      allow update: if isAdmin()
+        && isValidId(inviteeUid)
+        && isValidReferralRecord(incoming())
+        && incoming().inviteeUid == existing().inviteeUid
+        && incoming().inviterUid == existing().inviterUid
+        && incoming().inviterCode == existing().inviterCode
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['approvedProductCount', 'status', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(inviteeUid) && existing().inviteeUid == request.auth.uid;
+    }
+
+    // /orderProofs/{proofId}
+    match /orderProofs/{proofId} {
+      allow get: if isSignedIn() && isValidId(proofId) && (
+        existing().userId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isAdminEmail()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(proofId)
+        && incoming().keys().hasAll([
+          'userId', 'userName', 'userEmail', 'marketplace', 'productTitle',
+          'orderReference', 'quantity', 'proofNotes', 'proofAttachment',
+          'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'userId', 'userName', 'userEmail', 'marketplace', 'productTitle',
+          'orderReference', 'quantity', 'proofNotes', 'proofAttachment',
+          'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && isValidOrderProof(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().adminNote == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(proofId)
+        && existing().status == 'pending'
+        && isValidOrderProof(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status in ['approved', 'rejected']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+      allow delete: if isAdmin() || (
+        isSignedIn() && isValidId(proofId) && existing().userId == request.auth.uid && existing().status == 'pending'
+      );
+    }
+
+    // /products/{productId}
+    match /products/{productId} {
+      allow get: if isSignedIn() && isValidId(productId) && (existing().published == true || isAdmin());
+      allow list: if isSignedIn() && (resource.data.published == true || isAdminEmail());
+      allow create: if isAdmin()
+        && isValidId(productId)
+        && incoming().keys().hasAll([
+          'productCode', 'title', 'marketplace', 'category', 'price', 'compareAtPrice',
+          'affiliateUrl', 'imageUrl', 'description', 'published',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'productCode', 'title', 'marketplace', 'category', 'price', 'compareAtPrice',
+          'affiliateUrl', 'imageUrl', 'description', 'published',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidAffiliateProduct(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(productId)
+        && isValidAffiliateProduct(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'productCode', 'title', 'marketplace', 'category', 'price', 'compareAtPrice',
+          'affiliateUrl', 'imageUrl', 'description', 'published', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    // /likedItems/{likedId}
+    match /likedItems/{likedId} {
+      allow get: if isSignedIn() && isValidId(likedId) && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(likedId)
+        && incoming().keys().hasAll([
+          'userId', 'productId', 'title', 'marketplace', 'category',
+          'price', 'compareAtPrice', 'affiliateUrl', 'imageUrl', 'createdAt'
+        ])
+        && incoming().keys().hasOnly([
+          'userId', 'productId', 'title', 'marketplace', 'category',
+          'price', 'compareAtPrice', 'affiliateUrl', 'imageUrl', 'createdAt'
+        ])
+        && isValidLikedItem(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(likedId) && existing().userId == request.auth.uid;
+    }
+
+    // /withdrawals/{withdrawalId}
+    match /withdrawals/{withdrawalId} {
+      allow get: if isSignedIn() && isValidId(withdrawalId) && (
+        existing().userId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isAdminEmail()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(withdrawalId)
+        && incoming().keys().hasAll([
+          'userId', 'userName', 'userEmail', 'bankName', 'holderName', 'cellNumber',
+          'amount', 'taxPkr', 'feePkr', 'netAmountPkr', 'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'userId', 'userName', 'userEmail', 'bankName', 'holderName', 'cellNumber',
+          'amount', 'taxPkr', 'feePkr', 'netAmountPkr', 'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && isValidWithdrawalRequest(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().adminNote == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.walletBalancePkr >= incoming().amount
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.walletBalancePkr ==
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.walletBalancePkr - incoming().amount;
+      allow update: if isAdmin()
+        && isValidId(withdrawalId)
+        && existing().status == 'pending'
+        && isValidWithdrawalRequest(incoming())
+        && incoming().userId == existing().userId
+        && incoming().amount == existing().amount
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status in ['approved', 'rejected']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+      allow delete: if isAdmin() || (
+        isSignedIn() && isValidId(withdrawalId) && existing().userId == request.auth.uid && existing().status == 'pending'
+      );
+    }
+
+    // /admins/{adminId}
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isOwner(adminId);
+      allow list, create, update, delete: if false;
+    }
+
+    // /adminConfig/{docId}
+    match /adminConfig/{docId} {
+      allow get: if isAdmin() && isValidId(docId) && docId == 'security';
+      allow list: if false;
+      allow create, update: if isAdmin()
+        && isValidId(docId)
+        && docId == 'security'
+        && incoming().keys().hasAll(['pinHash', 'updatedBy', 'updatedAt'])
+        && incoming().keys().hasOnly(['pinHash', 'updatedBy', 'updatedAt'])
+        && isValidAdminSecurityConfig(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // /supportTickets/{ticketId}
+    match /supportTickets/{ticketId} {
+      allow get: if isSignedIn() && isValidId(ticketId) && (
+        existing().userId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isAdminEmail()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(ticketId)
+        && incoming().keys().hasAll([
+          'userId', 'userName', 'userEmail', 'topic', 'subject',
+          'message', 'status', 'adminReply', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'userId', 'userName', 'userEmail', 'topic', 'subject',
+          'message', 'status', 'adminReply', 'createdAt', 'updatedAt'
+        ])
+        && isValidSupportTicket(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'open'
+        && incoming().adminReply == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(ticketId)
+        && isValidSupportTicket(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminReply', 'updatedAt']);
+      allow delete: if isAdmin() || (
+        isSignedIn() && isValidId(ticketId) && existing().userId == request.auth.uid && existing().status == 'open'
+      );
+    }
+
+    // /helpcenterFeedback/{feedbackId}
+    match /helpcenterFeedback/{feedbackId} {
+      allow get: if isSignedIn() && isValidId(feedbackId) && (
+        existing().published == true || existing().userId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.published == true || resource.data.userId == request.auth.uid || isAdminEmail()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(feedbackId)
+        && incoming().keys().hasAll([
+          'userId', 'userName', 'rating', 'category', 'comment',
+          'published', 'adminReply', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'userId', 'userName', 'rating', 'category', 'comment',
+          'published', 'adminReply', 'createdAt', 'updatedAt'
+        ])
+        && isValidHelpcenterFeedback(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().published == true
+        && incoming().adminReply == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(feedbackId)
+        && isValidHelpcenterFeedback(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(existing().userId)
+            && incoming().published == existing().published
+            && incoming().adminReply == existing().adminReply
+            && incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'category', 'comment', 'updatedAt'])) ||
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['published', 'adminReply', 'updatedAt']))
+        );
+      allow delete: if isAdmin() || (
+        isSignedIn() && isValidId(feedbackId) && existing().userId == request.auth.uid
+      );
+    }
+
+    // /siteConfig/{docId}
+    match /siteConfig/{docId} {
+      allow get: if isValidId(docId) && docId == 'bannerAds';
+      allow list: if false;
+      allow create, update: if isAdmin()
+        && isValidId(docId)
+        && docId == 'bannerAds'
+        && incoming().keys().hasAll([
+          'enabled', 'placementScope', 'topBannerHtml', 'bottomBannerHtml', 'updatedBy', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'enabled', 'placementScope', 'topBannerHtml', 'bottomBannerHtml', 'updatedBy', 'updatedAt'
+        ])
+        && isValidSiteBannerConfig(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+  }
+}
