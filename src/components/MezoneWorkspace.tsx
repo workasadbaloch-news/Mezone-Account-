@@ -49,15 +49,21 @@ import {
   buildWhatsAppOrderProofUrl,
   COUNTRY_NAME_OPTIONS,
   COUNTRY_PHONE_OPTIONS,
+  DAILY_SHOPPING_REWARD_PKR,
   deleteMezoneAccountData,
   detectUserCountryFromBrowserLocation,
   ensureUserProfile,
   formatLoginWayLabel,
+  getTodayDateKey,
   linkUserToInviteCode,
   lookupCountryOption,
+  lookupInviteCodeOwner,
   normalizeInternationalPhone,
+  OFFICIAL_INVITE_CODE,
+  OFFICIAL_INVITER_NAME,
   parseInternationalPhone,
   removeLikedItemById,
+  submitDailyShoppingTrack,
   submitOrderProof,
   toggleLikedProduct,
   updatePersonalInformation,
@@ -66,6 +72,7 @@ import {
 import { ThemeToggleButton, useTheme } from '../lib/theme';
 import {
   AffiliateProduct,
+  DailyShoppingTrackRecord,
   GenderOption,
   HelpcenterFeedbackRecord,
   LikedItemRecord,
@@ -145,15 +152,17 @@ export function MezoneWorkspace({
   const [myInvitedReferrals, setMyInvitedReferrals] = useState<ReferralRecord[]>([]);
   const [myInviterRecord, setMyInviterRecord] = useState<ReferralRecord | null>(null);
   const [myOrderProofs, setMyOrderProofs] = useState<OrderProofRecord[]>([]);
+  const [myDailyTracks, setMyDailyTracks] = useState<DailyShoppingTrackRecord[]>([]);
   const [myWithdrawals, setMyWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [mySupportTickets, setMySupportTickets] = useState<SupportTicketRecord[]>([]);
   const [adminOrderProofs, setAdminOrderProofs] = useState<OrderProofRecord[]>([]);
+  const [adminDailyTracks, setAdminDailyTracks] = useState<DailyShoppingTrackRecord[]>([]);
   const [adminAllReferrals, setAdminAllReferrals] = useState<ReferralRecord[]>([]);
   const [adminWithdrawals, setAdminWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [adminSupportTickets, setAdminSupportTickets] = useState<SupportTicketRecord[]>([]);
   const [feedbackList, setFeedbackList] = useState<HelpcenterFeedbackRecord[]>([]);
   const [verifyChecked, setVerifyChecked] = useState(user.emailVerified);
-  const [referralSubTab, setReferralSubTab] = useState<'referral' | 'wallet'>('referral');
+  const [referralSubTab, setReferralSubTab] = useState<'referral' | 'daily' | 'wallet'>('referral');
 
   // Filters
   const [selectedMarketplace, setSelectedMarketplace] = useState<'All' | MarketplaceType>('All');
@@ -163,6 +172,7 @@ export function MezoneWorkspace({
 
   // Referral Program UI state
   const [manualInviteCode, setManualInviteCode] = useState('');
+  const [lookupRefName, setLookupRefName] = useState<string | null>(null);
   const [linkingInvite, setLinkingInvite] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [proofMarketplace, setProofMarketplace] = useState<MarketplaceType>('Temu');
@@ -174,6 +184,17 @@ export function MezoneWorkspace({
   const [proofError, setProofError] = useState<string | null>(null);
   const [lastSubmittedWhatsAppUrl, setLastSubmittedWhatsAppUrl] = useState<string | null>(null);
   const [submittingProof, setSubmittingProof] = useState(false);
+
+  // Daily Shopping Track (0.99 PKR) Proof Form state
+  const [dailyMarketplace, setDailyMarketplace] = useState<MarketplaceType>('Temu');
+  const [dailyProductTitle, setDailyProductTitle] = useState(CURATED_PRODUCTS[0].title);
+  const [dailyProductCode, setDailyProductCode] = useState(CURATED_PRODUCTS[0].productCode);
+  const [dailyOrderRef, setDailyOrderRef] = useState('');
+  const [dailyTrackDate, setDailyTrackDate] = useState(getTodayDateKey());
+  const [dailyNotes, setDailyNotes] = useState('');
+  const [dailyAttachment, setDailyAttachment] = useState('');
+  const [dailyError, setDailyError] = useState<string | null>(null);
+  const [submittingDaily, setSubmittingDaily] = useState(false);
 
   // Personal Information state
   const [editName, setEditName] = useState(user.displayName || '');
@@ -206,6 +227,23 @@ export function MezoneWorkspace({
       setSettingSection('personal');
     }
   }, [canSeeAdminCenterOption, isProtectedAdminAccount, settingSection]);
+
+  useEffect(() => {
+    const cleaned = manualInviteCode.trim().toUpperCase();
+    if (cleaned.length < 4) {
+      setLookupRefName(null);
+      return;
+    }
+    let cancelled = false;
+    void lookupInviteCodeOwner(cleaned).then((res) => {
+      if (!cancelled) {
+        setLookupRefName(res.found ? res.ownerName || null : null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [manualInviteCode]);
 
   const flashStatus = (msg: string) => {
     setStatusMessage(msg);
@@ -340,6 +378,30 @@ export function MezoneWorkspace({
         }
       );
 
+      // My daily shopping tracks (0.99 PKR per approved track)
+      const myDailyQuery = query(
+        collection(db, 'dailyShoppingTracks'),
+        where('userId', '==', user.uid)
+      );
+      const unsubMyDaily = onSnapshot(
+        myDailyQuery,
+        (snap) => {
+          const rows = snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<DailyShoppingTrackRecord, 'id'>),
+          }));
+          rows.sort((a, b) => {
+            const ta = (a.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+            const tb = (b.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+            return tb - ta;
+          });
+          setMyDailyTracks(rows);
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.LIST, 'dailyShoppingTracks');
+        }
+      );
+
       // My withdrawal requests
       const myWithdrawalsQuery = query(
         collection(db, 'withdrawals'),
@@ -439,6 +501,7 @@ export function MezoneWorkspace({
       );
 
       let unsubAdminProofs = () => {};
+      let unsubAdminDailyTracks = () => {};
       let unsubAdminReferrals = () => {};
       let unsubAdminWithdrawals = () => {};
       let unsubAdminTickets = () => {};
@@ -523,6 +586,26 @@ export function MezoneWorkspace({
             handleFirestoreError(error, OperationType.LIST, 'supportTickets');
           }
         );
+
+        const allDailyQuery = query(collection(db, 'dailyShoppingTracks'));
+        unsubAdminDailyTracks = onSnapshot(
+          allDailyQuery,
+          (snap) => {
+            const rows = snap.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<DailyShoppingTrackRecord, 'id'>),
+            }));
+            rows.sort((a, b) => {
+              const ta = (a.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+              const tb = (b.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+              return tb - ta;
+            });
+            setAdminDailyTracks(rows);
+          },
+          (error) => {
+            handleFirestoreError(error, OperationType.LIST, 'dailyShoppingTracks');
+          }
+        );
       }
 
       return () => {
@@ -531,11 +614,13 @@ export function MezoneWorkspace({
         unsubInvited();
         unsubMyRef();
         unsubMyProofs();
+        unsubMyDaily();
         unsubMyWithdrawals();
         unsubMyTickets();
         unsubProducts();
         unsubFeedback();
         unsubAdminProofs();
+        unsubAdminDailyTracks();
         unsubAdminReferrals();
         unsubAdminWithdrawals();
         unsubAdminTickets();
@@ -708,6 +793,76 @@ export function MezoneWorkspace({
     } finally {
       setSubmittingProof(false);
     }
+  };
+
+  const handleDailyScreenshotFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const compressed = await compressImageToDataUrl(file);
+      setDailyAttachment(compressed);
+      setDailyError(null);
+      flashStatus('Daily shopping proof screenshot attached.');
+    } catch {
+      setDailyError('Could not process that image. Please choose a valid JPG or PNG.');
+    }
+  };
+
+  const handleSubmitDailyTrack = async (e: FormEvent) => {
+    e.preventDefault();
+    setDailyError(null);
+    if (!verifyChecked) {
+      flashStatus('Verify your email first to submit Daily Shopping Track proofs.');
+      return;
+    }
+    if (!dailyProductTitle.trim() || !dailyOrderRef.trim() || !dailyNotes.trim()) {
+      setDailyError('Fill Product Name, Order ID, and Proof Details.');
+      return;
+    }
+    if (!dailyAttachment || dailyAttachment.trim().length < 20) {
+      setDailyError('Order screenshot proof is required to earn 0.99 PKR.');
+      return;
+    }
+
+    setSubmittingDaily(true);
+    try {
+      await submitDailyShoppingTrack({
+        uid: user.uid,
+        userName: profile?.displayName || user.displayName || 'Mezone Shopper',
+        userEmail: user.email || '',
+        marketplace: dailyMarketplace,
+        productTitle: dailyProductTitle,
+        productCode: dailyProductCode,
+        orderReference: dailyOrderRef,
+        trackDate: dailyTrackDate,
+        proofNotes: dailyNotes,
+        proofAttachment: dailyAttachment,
+      });
+      setDailyOrderRef('');
+      setDailyNotes('');
+      setDailyAttachment('');
+      flashStatus(
+        `Daily Shopping Track submitted! +${DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR will be added after Admin approval.`
+      );
+    } finally {
+      setSubmittingDaily(false);
+    }
+  };
+
+  const handleStartDailyTrackFromProduct = (product: AffiliateProduct) => {
+    if (!verifyChecked) {
+      setActiveTab('verification');
+      flashStatus('Mail verification is required for new accounts before shopping & tracking.');
+      return;
+    }
+    setDailyMarketplace(product.marketplace);
+    setDailyProductTitle(product.title);
+    setDailyProductCode(product.productCode || product.id);
+    setDailyTrackDate(getTodayDateKey());
+    setSelectedProduct(null);
+    setActiveTab('referral');
+    setReferralSubTab('daily');
+    flashStatus(`Loaded "${product.title}" into Daily Shopping Track (0.99 PKR).`);
   };
 
   const handleSavePersonalInfo = async (e: FormEvent) => {
@@ -891,9 +1046,9 @@ export function MezoneWorkspace({
         <div className="border-b border-[#EA580C]/30 bg-[#FFF7ED]">
           <div className="max-w-7xl mx-auto px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#9A3412]">
             <p>
-              Email verification pending for <strong>{user.email}</strong>. Verify your
-              email to activate My Liked, Referral Program invite codes, and Order Proof
-              submissions.
+              <strong>Mail verification required for new accounts:</strong> Verify your inbox for{' '}
+              <strong>{user.email}</strong> to buy products (Shop Now), access My Liked, link
+              invite codes, and submit Daily Shopping / Order Proofs.
             </p>
             <div className="flex items-center gap-3 shrink-0">
               <button
@@ -954,15 +1109,27 @@ export function MezoneWorkspace({
                 </h1>
               </div>
 
-              <div className="relative">
-                <Search className="w-4 h-4 text-[#57534E] absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="search"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search Temu & Amazon items..."
-                  className="h-10 w-full sm:w-64 pl-9 pr-3 text-sm bg-white border border-black/15 rounded-lg text-[#111113] placeholder:text-[#78716C] focus:outline-none focus:border-[#EA580C]"
-                />
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('referral');
+                    setReferralSubTab('daily');
+                  }}
+                  className="h-10 px-3.5 bg-[#FFF7ED] border border-[#EA580C]/35 text-[#9A3412] text-xs font-semibold rounded-lg hover:bg-[#FFEDD5] cursor-pointer whitespace-nowrap"
+                >
+                  Daily Shopping (+0.99 PKR/Track)
+                </button>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-[#57534E] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search Temu & Amazon items..."
+                    className="h-10 w-full sm:w-64 pl-9 pr-3 text-sm bg-white border border-black/15 rounded-lg text-[#111113] placeholder:text-[#78716C] focus:outline-none focus:border-[#EA580C]"
+                  />
+                </div>
               </div>
             </div>
 
@@ -1100,15 +1267,41 @@ export function MezoneWorkspace({
                             )}
                           </div>
 
-                          <a
-                            href={product.affiliateUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap shrink-0"
-                          >
-                            <span>Shop Now</span>
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
+                          {verifyChecked ? (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleStartDailyTrackFromProduct(product)}
+                                className="px-2.5 py-2 bg-[#FAF9F6] border border-black/15 text-[#111113] text-[11px] font-semibold rounded-lg hover:bg-[#EFECE5] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                                title="Fill Daily Shopping Proof Form (+0.99 PKR)"
+                              >
+                                Track 0.99
+                              </button>
+                              <a
+                                href={product.affiliateUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <span>Shop Now</span>
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTab('verification');
+                                flashStatus(
+                                  'Mail verification is required for new accounts before buying products.'
+                                );
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                              <span>Verify Mail to Buy</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     </article>
@@ -1184,15 +1377,31 @@ export function MezoneWorkspace({
                           >
                             Remove
                           </button>
-                          <a
-                            href={item.affiliateUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap"
-                          >
-                            <span>Shop Now</span>
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
+                          {verifyChecked ? (
+                            <a
+                              href={item.affiliateUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap"
+                            >
+                              <span>Shop Now</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTab('verification');
+                                flashStatus(
+                                  'Mail verification is required for new accounts before buying products.'
+                                );
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] transition-colors whitespace-nowrap cursor-pointer"
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                              <span>Verify Mail to Buy</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1214,12 +1423,14 @@ export function MezoneWorkspace({
                 <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#111113]">
                   {referralSubTab === 'wallet'
                     ? 'PKR Wallet, 30-Day Tokens & Withdraw'
-                    : 'Referral Program · 1 User = 500 PKR'}
+                    : referralSubTab === 'daily'
+                      ? 'Daily Shopping Track · +0.99 PKR / Approved Track'
+                      : 'Referral Program · 1 User = 500 PKR'}
                 </h1>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-1 p-1 bg-[#EFECE5] rounded-lg">
+                <div className="flex flex-wrap items-center gap-1 p-1 bg-[#EFECE5] rounded-lg">
                   <button
                     type="button"
                     onClick={() => setReferralSubTab('referral')}
@@ -1230,6 +1441,17 @@ export function MezoneWorkspace({
                     }`}
                   >
                     Referral Program
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReferralSubTab('daily')}
+                    className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      referralSubTab === 'daily'
+                        ? 'bg-white text-[#111113] shadow-sm'
+                        : 'text-[#57534E] hover:text-[#111113]'
+                    }`}
+                  >
+                    Daily Shopping (0.99 PKR)
                   </button>
                   <button
                     type="button"
@@ -1347,6 +1569,297 @@ export function MezoneWorkspace({
                   setSettingSection('personal');
                 }}
               />
+            ) : referralSubTab === 'daily' ? (
+              <div className="space-y-8">
+                <div className="grid grid-cols-2 lg:grid-cols-4 border border-black/10 rounded-xl bg-white divide-y lg:divide-y-0 lg:divide-x divide-black/10">
+                  <div className="p-6">
+                    <p className="text-xs text-[#57534E] mb-1">Daily Track Reward</p>
+                    <p className="font-mono text-2xl font-semibold text-[#C2410C] tabular-nums">
+                      0.99 PKR
+                    </p>
+                    <p className="text-xs text-[#57534E] mt-1">Per approved proof form</p>
+                  </div>
+                  <div className="p-6">
+                    <p className="text-xs text-[#57534E] mb-1">Approved Tracks</p>
+                    <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
+                      {profile?.dailyShoppingCount ??
+                        myDailyTracks.filter((d) => d.status === 'approved').length}
+                    </p>
+                    <p className="text-xs text-[#57534E] mt-1">Verified daily purchases</p>
+                  </div>
+                  <div className="p-6">
+                    <p className="text-xs text-[#57534E] mb-1">Daily Earned</p>
+                    <p className="font-mono text-2xl font-semibold text-emerald-700 tabular-nums">
+                      {(
+                        profile?.dailyShoppingEarnedPkr ??
+                        Number(
+                          (
+                            myDailyTracks.filter((d) => d.status === 'approved').length *
+                            DAILY_SHOPPING_REWARD_PKR
+                          ).toFixed(2)
+                        )
+                      ).toFixed(2)}{' '}
+                      PKR
+                    </p>
+                    <p className="text-xs text-[#57534E] mt-1">Added to PKR wallet</p>
+                  </div>
+                  <div className="p-6">
+                    <p className="text-xs text-[#57534E] mb-1">Pending Review</p>
+                    <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
+                      {myDailyTracks.filter((d) => d.status === 'pending').length}
+                    </p>
+                    <p className="text-xs text-[#57534E] mt-1">Awaiting Admin approval</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                  <div className="lg:col-span-6 bg-white border border-black/10 rounded-xl p-6 space-y-4">
+                    <div>
+                      <p className="text-xs font-medium text-[#C2410C]">
+                        Form Fill Proof Required · +0.99 PKR on Admin Approval
+                      </p>
+                      <h2 className="text-base font-semibold text-[#111113]">
+                        Submit Daily Shopping Track Proof
+                      </h2>
+                      <p className="text-xs text-[#57534E] mt-1">
+                        After shopping from Temu or Amazon using your verified Mezone account,
+                        fill this daily tracking form with your Order Screenshot to earn{' '}
+                        <strong className="text-[#111113]">0.99 PKR</strong> per approved track.
+                      </p>
+                    </div>
+
+                    {dailyError && (
+                      <div className="p-3 rounded-lg bg-[#FFF7ED] border border-[#EA580C]/40 text-xs text-[#9A3412]">
+                        {dailyError}
+                      </div>
+                    )}
+
+                    <form onSubmit={handleSubmitDailyTrack} className="space-y-3.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label
+                            htmlFor="daily-mkt"
+                            className="block text-xs font-medium text-[#111113] mb-1"
+                          >
+                            Store
+                          </label>
+                          <select
+                            id="daily-mkt"
+                            value={dailyMarketplace}
+                            onChange={(e) =>
+                              setDailyMarketplace(e.target.value as MarketplaceType)
+                            }
+                            className="w-full h-10 px-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg"
+                          >
+                            <option value="Temu">Temu</option>
+                            <option value="Amazon">Amazon</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label
+                            htmlFor="daily-date"
+                            className="block text-xs font-medium text-[#111113] mb-1"
+                          >
+                            Shopping Date
+                          </label>
+                          <input
+                            id="daily-date"
+                            type="date"
+                            required
+                            value={dailyTrackDate}
+                            onChange={(e) => setDailyTrackDate(e.target.value)}
+                            className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label
+                            htmlFor="daily-title"
+                            className="block text-xs font-medium text-[#111113] mb-1"
+                          >
+                            Product Name
+                          </label>
+                          <input
+                            id="daily-title"
+                            type="text"
+                            required
+                            maxLength={140}
+                            value={dailyProductTitle}
+                            onChange={(e) => setDailyProductTitle(e.target.value)}
+                            placeholder="Product bought today"
+                            className="w-full h-10 px-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg"
+                          />
+                        </div>
+
+                        <div>
+                          <label
+                            htmlFor="daily-code"
+                            className="block text-xs font-medium text-[#111113] mb-1"
+                          >
+                            Product Code
+                          </label>
+                          <input
+                            id="daily-code"
+                            type="text"
+                            maxLength={32}
+                            value={dailyProductCode}
+                            onChange={(e) => setDailyProductCode(e.target.value.toUpperCase())}
+                            placeholder="e.g. MZ-TM-101"
+                            className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="daily-order-id"
+                          className="block text-xs font-medium text-[#111113] mb-1"
+                        >
+                          Official Order ID
+                        </label>
+                        <input
+                          id="daily-order-id"
+                          type="text"
+                          required
+                          minLength={3}
+                          maxLength={64}
+                          value={dailyOrderRef}
+                          onChange={(e) => setDailyOrderRef(e.target.value)}
+                          placeholder="e.g. PO-044-9281736"
+                          className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
+                        />
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="daily-notes"
+                          className="block text-xs font-medium text-[#111113] mb-1"
+                        >
+                          Proof Details &amp; Checkout Notes
+                        </label>
+                        <textarea
+                          id="daily-notes"
+                          required
+                          rows={2}
+                          maxLength={300}
+                          value={dailyNotes}
+                          onChange={(e) => setDailyNotes(e.target.value)}
+                          placeholder="Confirm checkout time, order total, and confirmation link..."
+                          className="w-full p-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-medium text-[#111113] mb-1.5">
+                          Order Screenshot Proof{' '}
+                          <span className="text-[#EA580C]">(Required)</span>
+                        </label>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium bg-[#FAF9F6] border border-black/15 rounded-lg hover:bg-[#EFECE5] cursor-pointer">
+                            <Upload className="w-3.5 h-3.5 text-[#EA580C]" />
+                            <span>
+                              {dailyAttachment
+                                ? 'Replace Screenshot'
+                                : 'Upload Shopping Screenshot'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleDailyScreenshotFile}
+                              className="hidden"
+                            />
+                          </label>
+                          {dailyAttachment && (
+                            <button
+                              type="button"
+                              onClick={() => setDailyAttachment('')}
+                              className="text-xs text-[#9A3412] underline underline-offset-2 cursor-pointer"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        {dailyAttachment && (
+                          <div className="mt-2.5 p-2 bg-[#FAF9F6] border border-black/10 rounded-lg inline-block">
+                            <img
+                              src={dailyAttachment}
+                              alt="Daily shopping proof preview"
+                              className="max-h-32 rounded object-contain"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={submittingDaily}
+                        className="w-full h-10 px-4 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] disabled:opacity-60 cursor-pointer"
+                      >
+                        {submittingDaily
+                          ? 'Submitting Daily Track...'
+                          : 'Submit Daily Track Proof (+0.99 PKR on Approval)'}
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="lg:col-span-6 bg-white border border-black/10 rounded-xl overflow-hidden h-fit">
+                    <div className="px-6 py-4 border-b border-black/10">
+                      <h2 className="text-base font-semibold text-[#111113]">
+                        Your Daily Shopping Track History ({myDailyTracks.length})
+                      </h2>
+                    </div>
+                    {myDailyTracks.length === 0 ? (
+                      <div className="p-6 text-xs text-[#57534E]">
+                        No daily shopping tracks submitted yet. Submit your first form on the left
+                        to earn 0.99 PKR once approved!
+                      </div>
+                    ) : (
+                      <ul className="divide-y divide-black/10">
+                        {myDailyTracks.map((track) => (
+                          <li key={track.id} className="px-6 py-4 space-y-1.5">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-sm font-semibold text-[#111113]">
+                                {track.productTitle}{' '}
+                                <span className="font-mono text-xs text-[#57534E]">
+                                  ({track.productCode})
+                                </span>
+                              </p>
+                              <span
+                                className={`text-xs font-semibold capitalize ${
+                                  track.status === 'approved'
+                                    ? 'text-emerald-700'
+                                    : track.status === 'rejected'
+                                      ? 'text-red-700'
+                                      : 'text-[#C2410C]'
+                                }`}
+                              >
+                                {track.status === 'approved'
+                                  ? 'Approved · +0.99 PKR'
+                                  : track.status}
+                              </span>
+                            </div>
+                            <p className="text-xs text-[#57534E]">
+                              {track.marketplace} · Order{' '}
+                              <span className="font-mono text-[#111113]">
+                                {track.orderReference}
+                              </span>{' '}
+                              · Date <span className="font-mono">{track.trackDate}</span>
+                            </p>
+                            {track.adminNote && (
+                              <p className="text-xs text-[#57534E]">
+                                Admin note: {track.adminNote}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </div>
             ) : (
               <>
             {/* 4-Column Tabular KPI Strip */}
@@ -1426,21 +1939,48 @@ export function MezoneWorkspace({
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
               {/* Left Column: Invite Qualification + Submit Order Proof */}
               <div className="lg:col-span-6 space-y-6">
-                {/* Invited Status / Link Invite Code */}
+                {/* Invited Status / Link Invite Code & Reference Track */}
                 <div className="bg-white border border-black/10 rounded-xl p-6 space-y-4">
-                  <h2 className="text-base font-semibold text-[#111113]">
-                    Your Invite Qualification Progress
-                  </h2>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-base font-semibold text-[#111113]">
+                      Your Invite Qualification &amp; Reference Track
+                    </h2>
+                    <span className="text-[11px] font-mono font-semibold text-[#C2410C]">
+                      Official Code: {OFFICIAL_INVITE_CODE}
+                    </span>
+                  </div>
 
                   {myInviterRecord ? (
                     <div className="space-y-3">
-                      <div className="flex items-center justify-between text-xs text-[#57534E]">
-                        <span>
-                          Invited by code{' '}
-                          <strong className="font-mono text-[#111113]">
+                      <div className="p-3.5 rounded-lg bg-[#FAF9F6] border border-black/10 space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[#57534E]">Ref User Name:</span>
+                          <span className="font-semibold text-[#111113]">
+                            {myInviterRecord.inviterName ||
+                              (myInviterRecord.inviterCode === OFFICIAL_INVITE_CODE
+                                ? OFFICIAL_INVITER_NAME
+                                : 'Mezone Referrer')}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[#57534E]">Invite Code Used:</span>
+                          <span className="font-mono font-semibold text-[#C2410C]">
                             {myInviterRecord.inviterCode}
-                          </strong>
-                        </span>
+                            {myInviterRecord.inviterCode === OFFICIAL_INVITE_CODE
+                              ? ' (Official)'
+                              : ''}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[#57534E]">Reference Track Account ID:</span>
+                          <span className="font-mono text-[#111113] truncate max-w-[200px]">
+                            {user.uid}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs text-[#57534E]">
+                        <span>Buy Product Qualification</span>
                         <span className="font-mono font-semibold text-[#C2410C] tabular-nums">
                           {Math.min(10, myInviterRecord.approvedProductCount)} / 10 Approved
                           Products
@@ -1470,10 +2010,18 @@ export function MezoneWorkspace({
                     </div>
                   ) : (
                     <form onSubmit={handleLinkManualInvite} className="space-y-3">
-                      <p className="text-xs text-[#57534E] leading-relaxed">
-                        Did someone invite you to Mezone? Enter their Invite Code below to
-                        start your 10-product purchase qualification.
-                      </p>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs text-[#57534E] leading-relaxed">
+                          Enter a User Invite Code or use Mezone Official Invite Code:
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setManualInviteCode(OFFICIAL_INVITE_CODE)}
+                          className="text-[11px] font-mono font-semibold text-[#C2410C] hover:underline cursor-pointer"
+                        >
+                          Use Official: {OFFICIAL_INVITE_CODE}
+                        </button>
+                      </div>
                       <div className="flex items-center gap-2">
                         <input
                           type="text"
@@ -1481,7 +2029,7 @@ export function MezoneWorkspace({
                           maxLength={24}
                           value={manualInviteCode}
                           onChange={(e) => setManualInviteCode(e.target.value.toUpperCase())}
-                          placeholder="Enter Invite Code (e.g. MZ-ASAD12345)"
+                          placeholder={`Enter Invite Code (Official: ${OFFICIAL_INVITE_CODE})`}
                           className="flex-1 h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
                         />
                         <button
@@ -1492,6 +2040,11 @@ export function MezoneWorkspace({
                           {linkingInvite ? 'Linking...' : 'Apply Code'}
                         </button>
                       </div>
+                      {lookupRefName && (
+                        <p className="text-xs font-medium text-emerald-700">
+                          Ref User Name: <span className="font-semibold">{lookupRefName}</span>
+                        </p>
+                      )}
                     </form>
                   )}
                 </div>
@@ -1850,6 +2403,7 @@ export function MezoneWorkspace({
             isVerified={verifyChecked}
             profile={profile}
             myOrderProofs={myOrderProofs}
+            myDailyTracks={myDailyTracks}
             onRefreshVerification={handleRefreshVerification}
             onFlashStatus={flashStatus}
             onGoToPersonalInfo={() => {
@@ -2420,6 +2974,7 @@ export function MezoneWorkspace({
                   user={user}
                   publishedProducts={publishedProducts}
                   adminOrderProofs={adminOrderProofs}
+                  adminDailyTracks={adminDailyTracks}
                   adminAllReferrals={adminAllReferrals}
                   adminWithdrawals={adminWithdrawals}
                   adminSupportTickets={adminSupportTickets}
@@ -2570,15 +3125,41 @@ export function MezoneWorkspace({
               </div>
 
               <div className="space-y-2.5 pt-4 border-t border-black/10">
-                <a
-                  href={selectedProduct.affiliateUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full h-11 px-4 bg-[#EA580C] text-white text-sm font-semibold rounded-lg hover:bg-[#C2410C] transition-colors inline-flex items-center justify-center gap-2"
-                >
-                  <span>Shop Now on {selectedProduct.marketplace}</span>
-                  <ExternalLink className="w-4 h-4" />
-                </a>
+                {verifyChecked ? (
+                  <>
+                    <a
+                      href={selectedProduct.affiliateUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full h-11 px-4 bg-[#EA580C] text-white text-sm font-semibold rounded-lg hover:bg-[#C2410C] transition-colors inline-flex items-center justify-center gap-2"
+                    >
+                      <span>Shop Now on {selectedProduct.marketplace}</span>
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleStartDailyTrackFromProduct(selectedProduct)}
+                      className="w-full h-10 px-4 bg-[#FFF7ED] border border-[#EA580C]/35 text-xs font-semibold text-[#9A3412] rounded-lg hover:bg-[#FFEDD5] transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <span>Submit Daily Shopping Track (+0.99 PKR)</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedProduct(null);
+                      setActiveTab('verification');
+                      flashStatus(
+                        'Mail verification is required for new accounts before buying products.'
+                      );
+                    }}
+                    className="w-full h-11 px-4 bg-[#111113] text-white text-sm font-semibold rounded-lg hover:bg-[#27272A] transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Lock className="w-4 h-4" />
+                    <span>Verify Mail to Buy Products</span>
+                  </button>
+                )}
 
                 <button
                   type="button"

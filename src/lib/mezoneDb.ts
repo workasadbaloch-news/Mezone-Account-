@@ -12,6 +12,7 @@ import {
   AffiliateProduct,
   AuthProviderType,
   BannerPlacementScope,
+  DailyShoppingTrackRecord,
   FeedbackCategory,
   GenderOption,
   LikedItemRecord,
@@ -49,6 +50,9 @@ const MAX_FEEDBACK_COMMENT = 500;
 const MAX_BANNER_HTML = 20000;
 
 export const ADMIN_EMAIL = 'work.asadbaloch804@gmail.com';
+export const OFFICIAL_INVITE_CODE = 'MZ-MRASRGKE2';
+export const OFFICIAL_INVITER_UID = 'MEZONE_OFFICIAL';
+export const OFFICIAL_INVITER_NAME = 'Mezone Official';
 export const PENDING_INVITE_STORAGE_KEY = 'mezone_pending_invite_code';
 export const WHATSAPP_PROOF_NUMBER = '923312558875';
 export const WHATSAPP_PROOF_DISPLAY = '+92 3312558875';
@@ -282,6 +286,7 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
 export const ACCOUNT_CREATE_BONUS_PKR = 100;
 export const BUY_TWO_PRODUCTS_BONUS_PKR = 300;
 export const PROFILE_COMPLETE_BONUS_PKR = 50;
+export const DAILY_SHOPPING_REWARD_PKR = 0.99;
 export const DAILY_TOKENS_TARGET = 1000;
 export const DAILY_TOKENS_CYCLE_DAYS = 30;
 export const DAILY_TOKENS_CLAIM_PKR = 50;
@@ -589,9 +594,59 @@ export function setPendingInviteCode(code: string): void {
   }
 }
 
-export async function ensureInviteCodeIndexed(code: string, ownerUid: string): Promise<void> {
+export async function lookupInviteCodeOwner(codeRaw: string): Promise<{
+  found: boolean;
+  code: string;
+  ownerUid?: string;
+  ownerName?: string;
+  isOfficial: boolean;
+}> {
+  const code = sanitizeInviteCode(codeRaw);
+  const isOfficial = code === OFFICIAL_INVITE_CODE;
+  if (code.length < 4) {
+    return { found: false, code, isOfficial: false };
+  }
+
+  try {
+    const codeSnap = await getDoc(doc(db, 'inviteCodes', code));
+    if (codeSnap.exists()) {
+      const data = codeSnap.data() as { ownerUid: string; ownerName?: string; code: string };
+      return {
+        found: true,
+        code,
+        ownerUid: data.ownerUid,
+        ownerName: data.ownerName || (isOfficial ? OFFICIAL_INVITER_NAME : 'Mezone Member'),
+        isOfficial,
+      };
+    }
+  } catch {
+    // Fallback if unauthenticated or not indexed yet
+  }
+
+  if (isOfficial) {
+    return {
+      found: true,
+      code: OFFICIAL_INVITE_CODE,
+      ownerUid: OFFICIAL_INVITER_UID,
+      ownerName: OFFICIAL_INVITER_NAME,
+      isOfficial: true,
+    };
+  }
+
+  return { found: false, code, isOfficial: false };
+}
+
+export async function ensureInviteCodeIndexed(
+  code: string,
+  ownerUid: string,
+  ownerName?: string
+): Promise<void> {
   const cleaned = sanitizeInviteCode(code);
   if (cleaned.length < 4) return;
+  const cleanedOwnerName = sanitizeString(
+    ownerName || (cleaned === OFFICIAL_INVITE_CODE ? OFFICIAL_INVITER_NAME : 'Mezone Member'),
+    MAX_DISPLAY_NAME
+  );
   const codeRef = doc(db, 'inviteCodes', cleaned);
   try {
     const snap = await getDoc(codeRef);
@@ -599,8 +654,16 @@ export async function ensureInviteCodeIndexed(code: string, ownerUid: string): P
       await setDoc(codeRef, {
         code: cleaned,
         ownerUid,
+        ownerName: cleanedOwnerName,
         createdAt: serverTimestamp(),
       });
+    } else {
+      const data = snap.data() as { ownerUid?: string; ownerName?: string };
+      if (data.ownerUid === ownerUid && !data.ownerName && cleanedOwnerName) {
+        await updateDoc(codeRef, {
+          ownerName: cleanedOwnerName,
+        });
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `inviteCodes/${cleaned}`);
@@ -612,7 +675,7 @@ export async function linkUserToInviteCode(params: {
   inviteeName: string;
   inviteeEmail: string;
   inviterCodeRaw: string;
-}): Promise<{ ok: boolean; message: string }> {
+}): Promise<{ ok: boolean; inviterName?: string; message: string }> {
   const code = sanitizeInviteCode(params.inviterCodeRaw);
   if (code.length < 4) {
     return { ok: false, message: 'Invite code must be at least 4 characters.' };
@@ -621,11 +684,27 @@ export async function linkUserToInviteCode(params: {
   const codeRef = doc(db, 'inviteCodes', code);
   try {
     const codeSnap = await getDoc(codeRef);
-    if (!codeSnap.exists()) {
+    let inviterUid = '';
+    let inviterName = '';
+
+    if (codeSnap.exists()) {
+      const codeData = codeSnap.data() as {
+        ownerUid: string;
+        ownerName?: string;
+        code: string;
+      };
+      inviterUid = codeData.ownerUid;
+      inviterName =
+        codeData.ownerName ||
+        (code === OFFICIAL_INVITE_CODE ? OFFICIAL_INVITER_NAME : 'Mezone Member');
+    } else if (code === OFFICIAL_INVITE_CODE) {
+      inviterUid = OFFICIAL_INVITER_UID;
+      inviterName = OFFICIAL_INVITER_NAME;
+    } else {
       return { ok: false, message: `Invite code "${code}" was not found.` };
     }
-    const codeData = codeSnap.data() as { ownerUid: string; code: string };
-    if (codeData.ownerUid === params.inviteeUid) {
+
+    if (inviterUid === params.inviteeUid) {
       return { ok: false, message: 'You cannot use your own invite code.' };
     }
 
@@ -635,12 +714,15 @@ export async function linkUserToInviteCode(params: {
       return { ok: false, message: 'Your account is already linked to an invite code.' };
     }
 
+    const safeInviterName = sanitizeString(inviterName || 'Mezone Member', MAX_DISPLAY_NAME);
+
     await setDoc(referralRef, {
       inviteeUid: params.inviteeUid,
       inviteeName: sanitizeString(params.inviteeName || 'Mezone Shopper', MAX_DISPLAY_NAME),
       inviteeEmail: sanitizeString(params.inviteeEmail || `${params.inviteeUid}@mezone.app`, MAX_EMAIL),
-      inviterUid: codeData.ownerUid,
+      inviterUid,
       inviterCode: code,
+      inviterName: safeInviterName,
       approvedProductCount: 0,
       requiredProductCount: 10,
       rewardPkr: 500,
@@ -661,7 +743,8 @@ export async function linkUserToInviteCode(params: {
     setPendingInviteCode('');
     return {
       ok: true,
-      message: `Linked to invite code ${code}. Buy 10 products with approved order proof to accept the referral (500 PKR).`,
+      inviterName: safeInviterName,
+      message: `Linked to ${safeInviterName} (${code}). Buy 10 products with approved order proof to accept the referral (500 PKR).`,
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `referrals/${params.inviteeUid}`);
@@ -727,7 +810,18 @@ export async function ensureUserProfile(
         await updateDoc(userRef, backfillPayload);
       }
 
-      await ensureInviteCodeIndexed(resolvedInviteCode, user.uid);
+      await ensureInviteCodeIndexed(
+        resolvedInviteCode,
+        user.uid,
+        existingData.displayName || user.displayName || 'Mezone Member'
+      );
+      if ((verifiedTokenEmail || existingData.email || '').toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+        await ensureInviteCodeIndexed(
+          OFFICIAL_INVITE_CODE,
+          user.uid,
+          existingData.displayName || OFFICIAL_INVITER_NAME
+        );
+      }
       if (pendingCode && !existingData.invitedByCode) {
         await linkUserToInviteCode({
           inviteeUid: user.uid,
@@ -756,6 +850,8 @@ export async function ensureUserProfile(
         dailyLoginDays: needsWalletBackfill ? 0 : existingData.dailyLoginDays,
         lastCheckInDate: needsWalletBackfill ? '' : existingData.lastCheckInDate,
         totalWithdrawnPkr: needsWalletBackfill ? 0 : existingData.totalWithdrawnPkr,
+        dailyShoppingCount: existingData.dailyShoppingCount ?? 0,
+        dailyShoppingEarnedPkr: existingData.dailyShoppingEarnedPkr ?? 0,
       };
     }
 
@@ -770,7 +866,10 @@ export async function ensureUserProfile(
     );
     const email = sanitizeString(user.email || `${user.uid}@mezone.app`, MAX_EMAIL);
     const provider = detectProvider(user);
-    const inviteCode = generateInviteCode(user.uid, displayName);
+    const isAdminUser = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+    const inviteCode = isAdminUser
+      ? OFFICIAL_INVITE_CODE
+      : generateInviteCode(user.uid, displayName);
     const photoUrl = user.photoURL ? sanitizeString(user.photoURL, MAX_URL) : '';
     const draftPhone =
       pendingDraft?.phone && /^\+[1-9][0-9]{6,15}$/.test(pendingDraft.phone)
@@ -799,6 +898,8 @@ export async function ensureUserProfile(
       dailyLoginDays: 0,
       lastCheckInDate: '',
       totalWithdrawnPkr: 0,
+      dailyShoppingCount: 0,
+      dailyShoppingEarnedPkr: 0,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -807,7 +908,10 @@ export async function ensureUserProfile(
     if (pendingDraft) {
       clearPendingProfileDraft(user.uid);
     }
-    await ensureInviteCodeIndexed(inviteCode, user.uid);
+    await ensureInviteCodeIndexed(inviteCode, user.uid, displayName);
+    if (isAdminUser && inviteCode !== OFFICIAL_INVITE_CODE) {
+      await ensureInviteCodeIndexed(OFFICIAL_INVITE_CODE, user.uid, displayName || OFFICIAL_INVITER_NAME);
+    }
 
     if (pendingCode) {
       await linkUserToInviteCode({
@@ -1062,14 +1166,23 @@ export async function reviewOrderProofAsAdmin(params: {
 
         if (refData.status !== 'accepted' && nextStatus === 'accepted') {
           referralAcceptedNow = true;
-          const inviterRef = doc(db, 'users', refData.inviterUid);
-          const inviterSnap = await getDoc(inviterRef);
-          if (inviterSnap.exists()) {
-            const inviterData = inviterSnap.data() as UserProfile;
-            await updateDoc(inviterRef, {
-              walletBalancePkr: Number(((inviterData.walletBalancePkr || 0) + 500).toFixed(2)),
-              updatedAt: serverTimestamp(),
-            });
+          let targetInviterUid = refData.inviterUid;
+          if (targetInviterUid === OFFICIAL_INVITER_UID) {
+            const officialSnap = await getDoc(doc(db, 'inviteCodes', OFFICIAL_INVITE_CODE));
+            if (officialSnap.exists()) {
+              targetInviterUid = (officialSnap.data() as { ownerUid: string }).ownerUid;
+            }
+          }
+          if (targetInviterUid && targetInviterUid !== OFFICIAL_INVITER_UID) {
+            const inviterRef = doc(db, 'users', targetInviterUid);
+            const inviterSnap = await getDoc(inviterRef);
+            if (inviterSnap.exists()) {
+              const inviterData = inviterSnap.data() as UserProfile;
+              await updateDoc(inviterRef, {
+                walletBalancePkr: Number(((inviterData.walletBalancePkr || 0) + 500).toFixed(2)),
+                updatedAt: serverTimestamp(),
+              });
+            }
           }
         }
       }
@@ -1077,6 +1190,102 @@ export async function reviewOrderProofAsAdmin(params: {
     return { referralAcceptedNow, buyTwoBonusAwardedNow };
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `orderProofs/${proof.id}`);
+  }
+}
+
+export async function submitDailyShoppingTrack(params: {
+  uid: string;
+  userName: string;
+  userEmail: string;
+  marketplace: MarketplaceType;
+  productTitle: string;
+  productCode: string;
+  orderReference: string;
+  trackDate?: string;
+  proofNotes: string;
+  proofAttachment: string;
+}): Promise<string> {
+  const trackId = `dst_${params.uid.slice(0, 10)}_${Date.now().toString(36)}`;
+  const trackRef = doc(db, 'dailyShoppingTracks', trackId);
+  const cleanedAttachment = params.proofAttachment.trim().slice(0, MAX_PROOF_ATTACHMENT);
+
+  if (cleanedAttachment.length < 20) {
+    throw new Error('Daily shopping order screenshot proof is required.');
+  }
+
+  const cleanedTitle = sanitizeString(params.productTitle, MAX_TITLE);
+  const cleanedOrderRef = sanitizeString(params.orderReference, MAX_ORDER_REF);
+  const cleanedNotes = sanitizeString(params.proofNotes, MAX_PROOF_NOTES);
+  const cleanedProductCode =
+    sanitizeProductCode(params.productCode) ||
+    `MZ-${params.marketplace.slice(0, 2).toUpperCase()}`;
+  const trackDate =
+    params.trackDate && params.trackDate.trim().length === 10
+      ? params.trackDate.trim()
+      : getTodayDateKey();
+
+  if (cleanedTitle.length < 1 || cleanedOrderRef.length < 3 || cleanedNotes.length < 1) {
+    throw new Error('Please fill Product Name, Order ID, and Proof Details.');
+  }
+
+  try {
+    await setDoc(trackRef, {
+      userId: params.uid,
+      userName: sanitizeString(params.userName || 'Mezone Shopper', MAX_DISPLAY_NAME),
+      userEmail: sanitizeString(params.userEmail || '', MAX_EMAIL),
+      marketplace: params.marketplace,
+      productTitle: cleanedTitle,
+      productCode: cleanedProductCode,
+      orderReference: cleanedOrderRef,
+      trackDate,
+      proofNotes: cleanedNotes,
+      proofAttachment: cleanedAttachment,
+      rewardPkr: DAILY_SHOPPING_REWARD_PKR,
+      status: 'pending',
+      adminNote: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return trackId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `dailyShoppingTracks/${trackId}`);
+  }
+}
+
+export async function reviewDailyShoppingTrackAsAdmin(params: {
+  track: DailyShoppingTrackRecord;
+  decision: 'approved' | 'rejected';
+  adminNote?: string;
+}): Promise<void> {
+  const { track, decision, adminNote = '' } = params;
+  const trackRef = doc(db, 'dailyShoppingTracks', track.id);
+
+  try {
+    await updateDoc(trackRef, {
+      status: decision,
+      adminNote: sanitizeString(adminNote, MAX_ADMIN_NOTE),
+      updatedAt: serverTimestamp(),
+    });
+
+    if (decision === 'approved') {
+      const buyerRef = doc(db, 'users', track.userId);
+      const buyerSnap = await getDoc(buyerRef);
+      if (buyerSnap.exists()) {
+        const buyerData = buyerSnap.data() as UserProfile;
+        await updateDoc(buyerRef, {
+          walletBalancePkr: Number(
+            ((buyerData.walletBalancePkr || 0) + DAILY_SHOPPING_REWARD_PKR).toFixed(2)
+          ),
+          dailyShoppingCount: (buyerData.dailyShoppingCount || 0) + 1,
+          dailyShoppingEarnedPkr: Number(
+            ((buyerData.dailyShoppingEarnedPkr || 0) + DAILY_SHOPPING_REWARD_PKR).toFixed(2)
+          ),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `dailyShoppingTracks/${track.id}`);
   }
 }
 

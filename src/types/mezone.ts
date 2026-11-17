@@ -87,6 +87,8 @@ export interface UserProfile {
   dailyLoginDays: number;
   lastCheckInDate: string;
   totalWithdrawnPkr: number;
+  dailyShoppingCount?: number;
+  dailyShoppingEarnedPkr?: number;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -98,6 +100,7 @@ export interface ReferralRecord {
   inviteeEmail?: string;
   inviterUid: string;
   inviterCode: string;
+  inviterName?: string;
   approvedProductCount: number;
   requiredProductCount: number;
   rewardPkr: number;
@@ -188,5 +191,24 @@ export interface SiteBannerConfigRecord {
   topBannerHtml: string;
   bottomBannerHtml: string;
   updatedBy?: string;
+  updatedAt?: unknown;
+}
+
+export interface DailyShoppingTrackRecord {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  marketplace: MarketplaceType;
+  productTitle: string;
+  productCode: string;
+  orderReference: string;
+  trackDate: string;
+  proofNotes: string;
+  proofAttachment: string;
+  rewardPkr: number;
+  status: 'pending' | 'approved' | 'rejected';
+  adminNote: string;
+  createdAt?: unknown;
   updatedAt?: unknown;
 }

@@ -7,6 +7,7 @@ import {
   claimCompleteProfileBonus,
   claimDailyTokensToPkr,
   collectDailyLoginToken,
+  DAILY_SHOPPING_REWARD_PKR,
   DAILY_TOKENS_CLAIM_PKR,
   DAILY_TOKENS_CYCLE_DAYS,
   DAILY_TOKENS_TARGET,
@@ -316,6 +317,25 @@ export function WalletWithdrawSection({
                       Complete Profile
                     </button>
                   )}
+                </div>
+              </div>
+
+              <div className="py-3.5 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-[#111113]">
+                    Daily Shopping Track Reward ({DAILY_SHOPPING_REWARD_PKR} PKR / Track)
+                  </p>
+                  <p className="text-xs text-[#57534E]">
+                    Fill the Daily Shopping proof form with order screenshot. Reward credits on Admin approval.
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="font-mono text-sm font-semibold text-[#111113] tabular-nums">
+                    +{(profile?.dailyShoppingEarnedPkr ?? 0).toFixed(2)} PKR
+                  </p>
+                  <p className="text-xs font-semibold text-emerald-700 tabular-nums">
+                    {profile?.dailyShoppingCount ?? 0} Approved Track(s)
+                  </p>
                 </div>
               </div>
             </div>

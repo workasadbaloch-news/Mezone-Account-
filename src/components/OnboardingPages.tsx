@@ -1,10 +1,11 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { sendEmailVerification, User } from 'firebase/auth';
+import { sendEmailVerification, signOut, User } from 'firebase/auth';
 import {
   ArrowRight,
   CheckCircle2,
   Loader2,
   LocateFixed,
+  LogOut,
   MailCheck,
   ShoppingBag,
   Sparkles,
@@ -16,8 +17,11 @@ import {
   detectUserCountryFromBrowserLocation,
   ensureUserProfile,
   formatLoginWayLabel,
+  getPendingInviteCode,
   lookupCountryOption,
   normalizeInternationalPhone,
+  OFFICIAL_INVITE_CODE,
+  OFFICIAL_INVITER_NAME,
   savePendingProfileDraft,
   updatePersonalInformation,
 } from '../lib/mezoneDb';
@@ -120,6 +124,7 @@ export function CompleteProfilePage({
           gender,
           countryName,
         });
+        onProfileCompleted();
       } else {
         savePendingProfileDraft(user.uid, {
           displayName: cleanedName,
@@ -129,15 +134,18 @@ export function CompleteProfilePage({
           gender,
           countryName,
         });
+        setFormError(
+          `Mail verification is required for new accounts before shopping. Please verify ${user.email || 'your email'} via your inbox link, then click "I Have Verified".`
+        );
       }
-
-      onProfileCompleted();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Unable to save profile details.');
     } finally {
       setSaving(false);
     }
   };
+
+  const pendingInviteCode = getPendingInviteCode();
 
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#111113] flex flex-col">
@@ -149,9 +157,17 @@ export function CompleteProfilePage({
 
           <div className="flex items-center gap-3">
             <span className="text-xs font-medium text-[#57534E] hidden sm:inline">
-              Step 2 of 3 · Complete Profile
+              Step 2 of 3 · Complete Profile &amp; Verify Mail
             </span>
             <ThemeToggleButton />
+            <button
+              type="button"
+              onClick={() => void signOut(auth)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#111113] bg-white border border-black/15 rounded-lg hover:bg-[#EFECE5] cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
+            </button>
           </div>
         </div>
       </header>
@@ -201,15 +217,27 @@ export function CompleteProfilePage({
             </div>
           </div>
 
+          {pendingInviteCode && (
+            <div className="p-3.5 rounded-lg bg-[#F0FDF4] border border-emerald-700/20 text-xs text-emerald-900 flex items-center justify-between gap-3">
+              <span>
+                Referral Invite Code Linked:{' '}
+                <strong className="font-mono">{pendingInviteCode}</strong>
+                {pendingInviteCode === OFFICIAL_INVITE_CODE && (
+                  <span> · Ref User: {OFFICIAL_INVITER_NAME}</span>
+                )}
+              </span>
+            </div>
+          )}
+
           {!mailVerified && (
             <div className="p-3.5 rounded-lg bg-[#FFF7ED] border border-[#EA580C]/30 text-xs text-[#9A3412] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="space-y-0.5">
                 <p className="font-semibold">
-                  Mail verification pending for {user.email}
+                  Mail verification REQUIRED for {user.email}
                 </p>
                 <p className="text-[11px]">
                   {verificationNote ||
-                    'You can still complete your profile below — details will sync as soon as you verify your inbox link.'}
+                    'New accounts must verify their email link before buying products. Open your inbox link, then click I Have Verified.'}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -457,13 +485,19 @@ export function CompleteProfilePage({
             </div>
 
             <div className="pt-3 flex flex-wrap items-center justify-between gap-3 border-t border-black/10">
-              <button
-                type="button"
-                onClick={onSkipToThankYou}
-                className="text-xs font-medium text-[#57534E] hover:text-[#111113] underline underline-offset-4 cursor-pointer"
-              >
-                Skip for now
-              </button>
+              {mailVerified ? (
+                <button
+                  type="button"
+                  onClick={onSkipToThankYou}
+                  className="text-xs font-medium text-[#57534E] hover:text-[#111113] underline underline-offset-4 cursor-pointer"
+                >
+                  Skip for now
+                </button>
+              ) : (
+                <span className="text-[11px] font-medium text-[#9A3412]">
+                  Mail verification required before continuing
+                </span>
+              )}
 
               <button
                 type="submit"
@@ -475,7 +509,7 @@ export function CompleteProfilePage({
                 ) : (
                   <CheckCircle2 className="w-4 h-4" />
                 )}
-                <span>{saving ? 'Saving Profile...' : 'Complete Profile & Continue'}</span>
+                <span>{saving ? 'Checking Verification...' : 'Complete Profile & Continue'}</span>
               </button>
             </div>
           </form>

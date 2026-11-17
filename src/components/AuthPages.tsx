@@ -18,6 +18,8 @@ import {
 import {
   ensureUserProfile,
   getPendingInviteCode,
+  OFFICIAL_INVITE_CODE,
+  OFFICIAL_INVITER_NAME,
   sanitizeInviteCode,
   setPendingInviteCode,
 } from '../lib/mezoneDb';
@@ -276,13 +278,25 @@ export function AuthPages({
           )}
 
           {isRegister && (
-            <div className="mb-5">
-              <label
-                htmlFor="mezone-invite-code"
-                className="block text-xs font-medium text-[#111113] mb-1.5"
-              >
-                User Invite Code (Optional · Referral Program)
-              </label>
+            <div className="mb-5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="mezone-invite-code"
+                  className="block text-xs font-medium text-[#111113]"
+                >
+                  User Invite Code (Optional · Referral Program)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInviteCode(OFFICIAL_INVITE_CODE);
+                    setPendingInviteCode(OFFICIAL_INVITE_CODE);
+                  }}
+                  className="text-[11px] font-mono font-semibold text-[#C2410C] hover:underline cursor-pointer"
+                >
+                  Use Official: {OFFICIAL_INVITE_CODE}
+                </button>
+              </div>
               <input
                 id="mezone-invite-code"
                 type="text"
@@ -293,9 +307,24 @@ export function AuthPages({
                   setInviteCode(val);
                   setPendingInviteCode(val);
                 }}
-                placeholder="e.g. MZ-ASAD12345"
+                placeholder={`e.g. ${OFFICIAL_INVITE_CODE}`}
                 className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg text-[#111113] placeholder:text-[#78716C] focus:outline-none focus:ring-2 focus:ring-[#EA580C]/30 focus:border-[#EA580C]"
               />
+              <p className="text-[11px] text-[#57534E]">
+                {inviteCode === OFFICIAL_INVITE_CODE ? (
+                  <span className="font-semibold text-emerald-700">
+                    Official Invite Code selected · Ref User: {OFFICIAL_INVITER_NAME}
+                  </span>
+                ) : (
+                  <span>
+                    Don&apos;t have a code? Use Official Invite Code{' '}
+                    <span className="font-mono font-semibold text-[#111113]">
+                      {OFFICIAL_INVITE_CODE}
+                    </span>{' '}
+                    (New accounts require Mail Verification).
+                  </span>
+                )}
+              </p>
             </div>
           )}
 

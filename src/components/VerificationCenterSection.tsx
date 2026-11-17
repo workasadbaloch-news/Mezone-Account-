@@ -26,16 +26,22 @@ import {
 } from '../lib/firebase';
 import {
   buildWhatsAppOrderProofUrl,
+  DAILY_SHOPPING_REWARD_PKR,
   formatLoginWayLabel,
   WHATSAPP_PROOF_DISPLAY,
 } from '../lib/mezoneDb';
-import { OrderProofRecord, UserProfile } from '../types/mezone';
+import {
+  DailyShoppingTrackRecord,
+  OrderProofRecord,
+  UserProfile,
+} from '../types/mezone';
 
 interface VerificationCenterSectionProps {
   user: User;
   isVerified: boolean;
   profile: UserProfile | null;
   myOrderProofs: OrderProofRecord[];
+  myDailyTracks?: DailyShoppingTrackRecord[];
   onRefreshVerification: () => Promise<void>;
   onFlashStatus: (message: string) => void;
   onGoToPersonalInfo: () => void;
@@ -46,6 +52,7 @@ export function VerificationCenterSection({
   isVerified,
   profile,
   myOrderProofs,
+  myDailyTracks = [],
   onRefreshVerification,
   onFlashStatus,
   onGoToPersonalInfo,
@@ -195,8 +202,9 @@ export function VerificationCenterSection({
                 Account Verification & Mail Verification
               </h2>
               <p className="text-xs text-[#57534E] mt-0.5">
-                Verified mail unlocks your Referral Invite ID, +100 PKR account bonus, +50 PKR
-                profile bonus, and PKR withdrawals.
+                Mail Verification is required for all new accounts to unlock Product Buying
+                (Shop Now), your Referral Invite ID, +100 PKR account bonus, +50 PKR profile bonus,
+                and PKR withdrawals.
               </p>
             </div>
           </div>
@@ -686,6 +694,82 @@ export function VerificationCenterSection({
                     <MessageCircle className="w-3.5 h-3.5" />
                     <span>WhatsApp {WHATSAPP_PROOF_DISPLAY}</span>
                   </a>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 4. DAILY SHOPPING TRACK VERIFICATION HISTORY (0.99 PKR / APPROVED TRACK) */}
+      <section className="bg-white border border-black/10 rounded-xl overflow-hidden">
+        <div className="px-6 py-5 border-b border-black/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium text-[#C2410C]">
+              Daily Shopping Proof History (+{DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR / Track)
+            </p>
+            <h2 className="text-base font-semibold text-[#111113]">
+              Daily Shopping Track Verification ({myDailyTracks.length})
+            </h2>
+            <p className="text-xs text-[#57534E] mt-0.5 tabular-nums">
+              {myDailyTracks.filter((d) => d.status === 'approved').length} Approved · +
+              {(
+                myDailyTracks.filter((d) => d.status === 'approved').length *
+                DAILY_SHOPPING_REWARD_PKR
+              ).toFixed(2)}{' '}
+              PKR Credited
+            </p>
+          </div>
+        </div>
+
+        {myDailyTracks.length === 0 ? (
+          <div className="p-8 text-center text-xs text-[#57534E]">
+            No daily shopping track proof submissions yet.
+          </div>
+        ) : (
+          <ul className="divide-y divide-black/10">
+            {myDailyTracks.map((track) => (
+              <li
+                key={track.id}
+                className="p-6 flex flex-col md:flex-row md:items-center justify-between gap-4"
+              >
+                <div className="space-y-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-[#111113]">
+                      {track.productTitle}{' '}
+                      <span className="font-mono text-xs text-[#57534E]">
+                        ({track.productCode})
+                      </span>
+                    </p>
+                    <span
+                      className={`inline-flex items-center gap-1 text-xs font-semibold capitalize ${
+                        track.status === 'approved'
+                          ? 'text-emerald-700'
+                          : track.status === 'rejected'
+                            ? 'text-red-700'
+                            : 'text-[#C2410C]'
+                      }`}
+                    >
+                      {track.status === 'approved' && <CheckCircle2 className="w-3.5 h-3.5" />}
+                      {track.status === 'rejected' && <XCircle className="w-3.5 h-3.5" />}
+                      {track.status === 'pending' && <Clock className="w-3.5 h-3.5" />}
+                      <span>
+                        {track.status === 'approved' ? 'Approved (+0.99 PKR)' : track.status}
+                      </span>
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#57534E]">
+                    {track.marketplace} · Order{' '}
+                    <span className="font-mono text-[#111113]">{track.orderReference}</span> ·
+                    Date <span className="font-mono">{track.trackDate}</span>
+                  </p>
+                  <p className="text-xs text-[#57534E]">Proof: {track.proofNotes}</p>
+                  {track.adminNote && (
+                    <p className="text-xs text-[#111113]">
+                      <span className="font-semibold text-[#C2410C]">Admin Note: </span>
+                      {track.adminNote}
+                    </p>
+                  )}
                 </div>
               </li>
             ))}

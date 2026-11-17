@@ -33,13 +33,17 @@ import {
 } from '../lib/firebase';
 import {
   changeAdminLoginPin,
+  DAILY_SHOPPING_REWARD_PKR,
   DEFAULT_BOTTOM_BANNER_HTML,
   DEFAULT_TOP_BANNER_HTML,
   deleteHelpcenterFeedback,
   deletePublishedProduct,
+  OFFICIAL_INVITE_CODE,
+  OFFICIAL_INVITER_NAME,
   publishAffiliateProduct,
   resolveDriveImageUrl,
   resolveSupportTicketAsAdmin,
+  reviewDailyShoppingTrackAsAdmin,
   reviewHelpcenterFeedbackAsAdmin,
   reviewOrderProofAsAdmin,
   reviewWithdrawalAsAdmin,
@@ -53,6 +57,7 @@ import {
   AdminCenterTab,
   AffiliateProduct,
   BannerPlacementScope,
+  DailyShoppingTrackRecord,
   HelpcenterFeedbackRecord,
   MarketplaceType,
   OrderProofRecord,
@@ -67,6 +72,7 @@ interface AdminCenterSectionProps {
   user: User;
   publishedProducts: AffiliateProduct[];
   adminOrderProofs: OrderProofRecord[];
+  adminDailyTracks: DailyShoppingTrackRecord[];
   adminAllReferrals: ReferralRecord[];
   adminWithdrawals: WithdrawalRecord[];
   adminSupportTickets: SupportTicketRecord[];
@@ -80,6 +86,7 @@ export function AdminCenterSection({
   user,
   publishedProducts,
   adminOrderProofs,
+  adminDailyTracks,
   adminAllReferrals,
   adminWithdrawals,
   adminSupportTickets,
@@ -97,9 +104,10 @@ export function AdminCenterSection({
 
   const [adminTab, setAdminTab] = useState<AdminCenterTab>('productCenter');
   const [requestSubView, setRequestSubView] = useState<
-    'withdraw' | 'proofs' | 'referrals' | 'tickets' | 'feedback'
+    'withdraw' | 'proofs' | 'dailyTracks' | 'referrals' | 'tickets' | 'feedback'
   >('withdraw');
   const [withdrawFilter, setWithdrawFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [refSearch, setRefSearch] = useState('');
   const [ticketReplies, setTicketReplies] = useState<Record<string, string>>({});
   const [feedbackReplies, setFeedbackReplies] = useState<Record<string, string>>({});
 
@@ -172,6 +180,7 @@ export function AdminCenterSection({
 
   const pendingWithdrawCount = adminWithdrawals.filter((w) => w.status === 'pending').length;
   const pendingProofCount = adminOrderProofs.filter((p) => p.status === 'pending').length;
+  const pendingDailyTracksCount = adminDailyTracks.filter((d) => d.status === 'pending').length;
   const openTicketCount = adminSupportTickets.filter((t) => t.status === 'open').length;
 
   const filteredManageProducts = publishedProducts.filter((p) => {
@@ -406,6 +415,25 @@ export function AdminCenterSection({
     }
   };
 
+  const handleReviewDailyTrack = async (
+    track: DailyShoppingTrackRecord,
+    decision: 'approved' | 'rejected'
+  ) => {
+    await reviewDailyShoppingTrackAsAdmin({
+      track,
+      decision,
+      adminNote:
+        decision === 'approved'
+          ? `Daily shopping proof verified. +${DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR credited.`
+          : 'Daily shopping proof could not be verified.',
+    });
+    onFlashStatus(
+      decision === 'approved'
+        ? `Daily shopping track approved! +${DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR credited to ${track.userName}.`
+        : `Daily shopping track marked rejected for ${track.userName}.`
+    );
+  };
+
   const handleReviewWithdrawal = async (
     withdrawal: WithdrawalRecord,
     decision: 'approved' | 'rejected'
@@ -635,7 +663,7 @@ export function AdminCenterSection({
                 ['productManage', `Product Manage (${publishedProducts.length})`],
                 [
                   'requestCenter',
-                  `Request Center (${pendingWithdrawCount + pendingProofCount + openTicketCount})`,
+                  `Request Center (${pendingWithdrawCount + pendingProofCount + pendingDailyTracksCount + openTicketCount})`,
                 ],
                 ['bannerAds', 'Banner Ads'],
                 ['adminSetting', 'Setting'],
@@ -1376,6 +1404,17 @@ export function AdminCenterSection({
             </button>
             <button
               type="button"
+              onClick={() => setRequestSubView('dailyTracks')}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                requestSubView === 'dailyTracks'
+                  ? 'bg-white text-[#111113] shadow-sm'
+                  : 'text-[#57534E] hover:text-[#111113]'
+              }`}
+            >
+              Daily Shopping (0.99 PKR) ({adminDailyTracks.length})
+            </button>
+            <button
+              type="button"
               onClick={() => setRequestSubView('referrals')}
               className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                 requestSubView === 'referrals'
@@ -1383,7 +1422,7 @@ export function AdminCenterSection({
                   : 'text-[#57534E] hover:text-[#111113]'
               }`}
             >
-              Track Referral Users ({adminAllReferrals.length})
+              Reference Track ({adminAllReferrals.length})
             </button>
             <button
               type="button"
@@ -1577,13 +1616,119 @@ export function AdminCenterSection({
             </div>
           )}
 
+          {requestSubView === 'dailyTracks' && (
+            <div className="bg-white border border-black/10 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-black/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium text-[#C2410C]">
+                    Daily Shopping Track Proof Review · +{DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR / Track
+                  </p>
+                  <h2 className="text-base font-semibold text-[#111113]">
+                    Daily Shopping Track Submissions ({adminDailyTracks.length})
+                  </h2>
+                </div>
+                <span className="text-xs font-mono text-[#57534E]">
+                  {pendingDailyTracksCount} Pending Approval
+                </span>
+              </div>
+
+              {adminDailyTracks.length === 0 ? (
+                <p className="p-6 text-xs text-[#57534E]">
+                  No daily shopping track proof submissions yet.
+                </p>
+              ) : (
+                <ul className="divide-y divide-black/10">
+                  {adminDailyTracks.map((track) => (
+                    <li key={track.id} className="p-6 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm font-semibold text-[#111113]">
+                            {track.productTitle}{' '}
+                            <span className="font-mono text-xs text-[#57534E]">
+                              ({track.productCode})
+                            </span>
+                          </p>
+                          <p className="text-xs text-[#57534E]">
+                            {track.userName} ({track.userEmail}) · Account ID{' '}
+                            <span className="font-mono">{track.userId}</span>
+                          </p>
+                          <p className="text-xs text-[#57534E]">
+                            {track.marketplace} · Order{' '}
+                            <span className="font-mono text-[#111113]">
+                              {track.orderReference}
+                            </span>{' '}
+                            · Date <span className="font-mono">{track.trackDate}</span> · Reward{' '}
+                            <span className="font-mono font-semibold text-[#C2410C]">
+                              +{track.rewardPkr.toFixed(2)} PKR
+                            </span>
+                          </p>
+                          <p className="text-xs text-[#111113]">Proof Notes: {track.proofNotes}</p>
+                        </div>
+
+                        {track.status === 'pending' ? (
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleReviewDailyTrack(track, 'approved')}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 text-white text-xs font-semibold rounded-lg hover:bg-emerald-800 cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Approve (+0.99 PKR)</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleReviewDailyTrack(track, 'rejected')}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#FAF9F6] border border-black/15 text-[#9A3412] text-xs font-semibold rounded-lg hover:bg-[#EFECE5] cursor-pointer"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Reject</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <span
+                            className={`text-xs font-semibold capitalize ${
+                              track.status === 'approved' ? 'text-emerald-700' : 'text-red-700'
+                            }`}
+                          >
+                            {track.status === 'approved' ? 'Approved (+0.99 PKR)' : track.status}
+                          </span>
+                        )}
+                      </div>
+
+                      {track.proofAttachment && (
+                        <img
+                          src={track.proofAttachment}
+                          alt={`Daily shopping proof ${track.orderReference}`}
+                          className="max-h-40 rounded-lg border border-black/10 object-contain bg-[#FAF9F6]"
+                        />
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {requestSubView === 'referrals' && (
             <div className="bg-white border border-black/10 rounded-xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-black/10">
-                <p className="text-xs font-medium text-[#C2410C]">Referral Monitor</p>
-                <h2 className="text-base font-semibold text-[#111113]">
-                  Track Referral Users ({adminAllReferrals.length})
-                </h2>
+              <div className="px-6 py-4 border-b border-black/10 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium text-[#C2410C]">
+                    Reference Track · Account &amp; Invite Monitor (Official Code:{' '}
+                    <span className="font-mono font-bold">{OFFICIAL_INVITE_CODE}</span>)
+                  </p>
+                  <h2 className="text-base font-semibold text-[#111113]">
+                    Track Referral Users &amp; Account Activity ({adminAllReferrals.length})
+                  </h2>
+                </div>
+
+                <input
+                  type="search"
+                  value={refSearch}
+                  onChange={(e) => setRefSearch(e.target.value)}
+                  placeholder="Search name, mail, account ID, ref user, or code..."
+                  className="h-9 w-full lg:w-72 px-3 text-xs bg-[#FAF9F6] border border-black/15 rounded-lg"
+                />
               </div>
 
               {adminAllReferrals.length === 0 ? (
@@ -1593,58 +1738,110 @@ export function AdminCenterSection({
                   <table className="w-full text-left text-xs">
                     <thead className="bg-[#FAF9F6] border-b border-black/10 text-[#57534E]">
                       <tr>
-                        <th className="px-6 py-3 font-semibold">Name</th>
+                        <th className="px-6 py-3 font-semibold">Account Track (Name &amp; UID)</th>
                         <th className="px-6 py-3 font-semibold">Mail</th>
+                        <th className="px-6 py-3 font-semibold">Ref User &amp; Invite Code</th>
                         <th className="px-6 py-3 font-semibold">Buy Product</th>
-                        <th className="px-6 py-3 font-semibold">Invite Code</th>
+                        <th className="px-6 py-3 font-semibold">Daily Shopping Track</th>
                         <th className="px-6 py-3 font-semibold">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-black/10">
-                      {adminAllReferrals.map((ref) => {
-                        const userProofs = adminOrderProofs.filter(
-                          (p) => p.userId === ref.inviteeUid
-                        );
-                        const approvedProofTitles = userProofs
-                          .filter((p) => p.status === 'approved')
-                          .map((p) => `${p.productTitle} (×${p.quantity})`);
-                        const fallbackEmail = ref.inviteeEmail || userProofs[0]?.userEmail || '—';
+                      {adminAllReferrals
+                        .filter((ref) => {
+                          const q = refSearch.trim().toLowerCase();
+                          if (!q) return true;
+                          return (
+                            ref.inviteeName.toLowerCase().includes(q) ||
+                            (ref.inviteeEmail || '').toLowerCase().includes(q) ||
+                            ref.inviteeUid.toLowerCase().includes(q) ||
+                            (ref.inviterName || '').toLowerCase().includes(q) ||
+                            ref.inviterCode.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((ref) => {
+                          const userProofs = adminOrderProofs.filter(
+                            (p) => p.userId === ref.inviteeUid
+                          );
+                          const approvedProofTitles = userProofs
+                            .filter((p) => p.status === 'approved')
+                            .map((p) => `${p.productTitle} (×${p.quantity})`);
+                          const userDailyTracks = adminDailyTracks.filter(
+                            (d) => d.userId === ref.inviteeUid
+                          );
+                          const approvedDailyCount = userDailyTracks.filter(
+                            (d) => d.status === 'approved'
+                          ).length;
+                          const pendingDailyCount = userDailyTracks.filter(
+                            (d) => d.status === 'pending'
+                          ).length;
+                          const dailyEarned = Number(
+                            (approvedDailyCount * DAILY_SHOPPING_REWARD_PKR).toFixed(2)
+                          );
+                          const fallbackEmail =
+                            ref.inviteeEmail || userProofs[0]?.userEmail || '—';
+                          const resolvedRefName =
+                            ref.inviterName ||
+                            (ref.inviterCode === OFFICIAL_INVITE_CODE
+                              ? OFFICIAL_INVITER_NAME
+                              : 'Mezone Referrer');
 
-                        return (
-                          <tr key={ref.id} className="align-top">
-                            <td className="px-6 py-4 font-semibold text-[#111113] whitespace-nowrap">
-                              {ref.inviteeName}
-                            </td>
-                            <td className="px-6 py-4 text-[#57534E] font-mono">
-                              {fallbackEmail}
-                            </td>
-                            <td className="px-6 py-4 text-[#111113]">
-                              <p className="font-mono font-semibold tabular-nums">
-                                {ref.approvedProductCount} / {ref.requiredProductCount} Approved
-                              </p>
-                              {approvedProofTitles.length > 0 && (
-                                <p className="text-[11px] text-[#57534E] mt-1 max-w-xs">
-                                  {approvedProofTitles.join(', ')}
+                          return (
+                            <tr key={ref.id} className="align-top">
+                              <td className="px-6 py-4">
+                                <p className="font-semibold text-[#111113] whitespace-nowrap">
+                                  {ref.inviteeName}
                                 </p>
-                              )}
-                            </td>
-                            <td className="px-6 py-4 font-mono text-[#57534E]">
-                              {ref.inviterCode}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span
-                                className={`font-semibold ${
-                                  ref.status === 'accepted'
-                                    ? 'text-emerald-700'
-                                    : 'text-[#C2410C]'
-                                }`}
-                              >
-                                {ref.status === 'accepted' ? 'Accepted (+500 PKR)' : 'Pending'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                                <p className="text-[11px] font-mono text-[#57534E] mt-0.5 break-all">
+                                  ID: {ref.inviteeUid}
+                                </p>
+                              </td>
+                              <td className="px-6 py-4 text-[#57534E] font-mono">
+                                {fallbackEmail}
+                              </td>
+                              <td className="px-6 py-4">
+                                <p className="font-semibold text-[#111113]">
+                                  {resolvedRefName}
+                                </p>
+                                <p className="text-[11px] font-mono text-[#C2410C] mt-0.5">
+                                  {ref.inviterCode}
+                                  {ref.inviterCode === OFFICIAL_INVITE_CODE ? ' (Official)' : ''}
+                                </p>
+                              </td>
+                              <td className="px-6 py-4 text-[#111113]">
+                                <p className="font-mono font-semibold tabular-nums">
+                                  {ref.approvedProductCount} / {ref.requiredProductCount} Approved
+                                </p>
+                                {approvedProofTitles.length > 0 && (
+                                  <p className="text-[11px] text-[#57534E] mt-1 max-w-xs">
+                                    {approvedProofTitles.join(', ')}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-[#111113]">
+                                <p className="font-mono font-semibold tabular-nums">
+                                  {approvedDailyCount} Track(s) · +{dailyEarned.toFixed(2)} PKR
+                                </p>
+                                {pendingDailyCount > 0 && (
+                                  <p className="text-[11px] text-[#C2410C] mt-0.5">
+                                    {pendingDailyCount} pending review
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <span
+                                  className={`font-semibold ${
+                                    ref.status === 'accepted'
+                                      ? 'text-emerald-700'
+                                      : 'text-[#C2410C]'
+                                  }`}
+                                >
+                                  {ref.status === 'accepted' ? 'Accepted (+500 PKR)' : 'Pending'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
                     </tbody>
                   </table>
                 </div>

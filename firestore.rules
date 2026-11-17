@@ -73,6 +73,8 @@ service cloud.firestore {
         && data.dailyLoginDays is number && data.dailyLoginDays >= 0 && data.dailyLoginDays <= 30
         && data.lastCheckInDate is string && data.lastCheckInDate.size() <= 16
         && data.totalWithdrawnPkr is number && data.totalWithdrawnPkr >= 0 && data.totalWithdrawnPkr <= 10000000
+        && (!('dailyShoppingCount' in data) || (data.dailyShoppingCount is number && data.dailyShoppingCount >= 0 && data.dailyShoppingCount <= 100000))
+        && (!('dailyShoppingEarnedPkr' in data) || (data.dailyShoppingEarnedPkr is number && data.dailyShoppingEarnedPkr >= 0 && data.dailyShoppingEarnedPkr <= 1000000))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -85,6 +87,7 @@ service cloud.firestore {
         && data.code.matches('^[A-Z0-9_-]+$')
         && data.ownerUid is string
         && isValidId(data.ownerUid)
+        && (!('ownerName' in data) || isNonEmptyString(data.ownerName, 80))
         && data.createdAt is timestamp;
     }
 
@@ -101,6 +104,7 @@ service cloud.firestore {
         && data.inviterCode.size() >= 4
         && data.inviterCode.size() <= 24
         && data.inviterCode.matches('^[A-Z0-9_-]+$')
+        && (!('inviterName' in data) || isNonEmptyString(data.inviterName, 80))
         && data.approvedProductCount is number && data.approvedProductCount >= 0 && data.approvedProductCount <= 1000
         && data.requiredProductCount == 10
         && data.rewardPkr == 500
@@ -246,6 +250,26 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    // Entity 12: DailyShoppingTrack (0.99 PKR reward per approved track)
+    function isValidDailyShoppingTrack(data) {
+      return data.userId is string
+        && isValidId(data.userId)
+        && isNonEmptyString(data.userName, 80)
+        && data.userEmail is string && data.userEmail.size() <= 160
+        && data.marketplace in ['Temu', 'Amazon']
+        && isNonEmptyString(data.productTitle, 140)
+        && data.productCode is string && data.productCode.size() >= 1 && data.productCode.size() <= 32
+        && data.orderReference is string && data.orderReference.size() >= 3 && data.orderReference.size() <= 64
+        && data.trackDate is string && data.trackDate.size() == 10
+        && isNonEmptyString(data.proofNotes, 300)
+        && data.proofAttachment is string && data.proofAttachment.size() >= 20 && data.proofAttachment.size() <= 70000
+        && data.rewardPkr == 0.99
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.adminNote is string && data.adminNote.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // /users/{userId}
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
@@ -268,6 +292,7 @@ service cloud.firestore {
           'walletBalancePkr', 'accountBonusClaimed', 'profileBonusClaimed',
           'buyTwoBonusClaimed', 'approvedProductsCount', 'loginTokens',
           'dailyLoginDays', 'lastCheckInDate', 'totalWithdrawnPkr',
+          'dailyShoppingCount', 'dailyShoppingEarnedPkr',
           'createdAt', 'updatedAt'
         ])
         && isValidUserProfile(incoming())
@@ -281,6 +306,8 @@ service cloud.firestore {
         && incoming().dailyLoginDays == 0
         && incoming().lastCheckInDate == ''
         && incoming().totalWithdrawnPkr == 0
+        && (!('dailyShoppingCount' in incoming()) || incoming().dailyShoppingCount == 0)
+        && (!('dailyShoppingEarnedPkr' in incoming()) || incoming().dailyShoppingEarnedPkr == 0)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isVerifiedUser()
@@ -296,7 +323,8 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt'])) ||
           (incoming().email == existing().email && (
           (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
-            'walletBalancePkr', 'buyTwoBonusClaimed', 'approvedProductsCount', 'updatedAt'
+            'walletBalancePkr', 'buyTwoBonusClaimed', 'approvedProductsCount',
+            'dailyShoppingCount', 'dailyShoppingEarnedPkr', 'updatedAt'
           ])) ||
           (isOwner(userId) && (
             // Legacy wallet/invite backfill for pre-existing users
@@ -370,12 +398,19 @@ service cloud.firestore {
       allow create: if isVerifiedUser()
         && isValidId(code)
         && incoming().keys().hasAll(['code', 'ownerUid', 'createdAt'])
-        && incoming().keys().hasOnly(['code', 'ownerUid', 'createdAt'])
+        && incoming().keys().hasOnly(['code', 'ownerUid', 'ownerName', 'createdAt'])
         && isValidInviteCode(incoming())
         && incoming().code == code
         && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time;
-      allow update: if false;
+      allow update: if isVerifiedUser()
+        && isValidId(code)
+        && existing().ownerUid == request.auth.uid
+        && incoming().code == existing().code
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && isValidInviteCode(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['ownerName']);
       allow delete: if isSignedIn() && isValidId(code) && existing().ownerUid == request.auth.uid;
     }
 
@@ -401,7 +436,7 @@ service cloud.firestore {
         ])
         && incoming().keys().hasOnly([
           'inviteeUid', 'inviteeName', 'inviteeEmail', 'inviterUid', 'inviterCode',
-          'approvedProductCount', 'requiredProductCount', 'rewardPkr',
+          'inviterName', 'approvedProductCount', 'requiredProductCount', 'rewardPkr',
           'status', 'createdAt', 'updatedAt'
         ])
         && isValidReferralRecord(incoming())
@@ -410,8 +445,11 @@ service cloud.firestore {
         && incoming().status == 'pending'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && exists(/databases/$(database)/documents/inviteCodes/$(incoming().inviterCode))
-        && get(/databases/$(database)/documents/inviteCodes/$(incoming().inviterCode)).data.ownerUid == incoming().inviterUid;
+        && (
+          (exists(/databases/$(database)/documents/inviteCodes/$(incoming().inviterCode))
+            && get(/databases/$(database)/documents/inviteCodes/$(incoming().inviterCode)).data.ownerUid == incoming().inviterUid) ||
+          (incoming().inviterCode == 'MZ-MRASRGKE2' && incoming().inviterUid == 'MEZONE_OFFICIAL')
+        );
       allow update: if isAdmin()
         && isValidId(inviteeUid)
         && isValidReferralRecord(incoming())
@@ -676,6 +714,48 @@ service cloud.firestore {
         && incoming().updatedBy == request.auth.uid
         && incoming().updatedAt == request.time;
       allow delete: if false;
+    }
+
+    // /dailyShoppingTracks/{trackId}
+    match /dailyShoppingTracks/{trackId} {
+      allow get: if isSignedIn() && isValidId(trackId) && (
+        existing().userId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isAdminEmail()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(trackId)
+        && incoming().keys().hasAll([
+          'userId', 'userName', 'userEmail', 'marketplace', 'productTitle', 'productCode',
+          'orderReference', 'trackDate', 'proofNotes', 'proofAttachment', 'rewardPkr',
+          'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'userId', 'userName', 'userEmail', 'marketplace', 'productTitle', 'productCode',
+          'orderReference', 'trackDate', 'proofNotes', 'proofAttachment', 'rewardPkr',
+          'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && isValidDailyShoppingTrack(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().rewardPkr == 0.99
+        && incoming().status == 'pending'
+        && incoming().adminNote == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(trackId)
+        && existing().status == 'pending'
+        && isValidDailyShoppingTrack(incoming())
+        && incoming().userId == existing().userId
+        && incoming().rewardPkr == existing().rewardPkr
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status in ['approved', 'rejected']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+      allow delete: if isAdmin() || (
+        isSignedIn() && isValidId(trackId) && existing().userId == request.auth.uid && existing().status == 'pending'
+      );
     }
   }
 }
