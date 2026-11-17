@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   FacebookAuthProvider,
   getAuth,
+  GithubAuthProvider,
   GoogleAuthProvider,
   OAuthProvider,
 } from 'firebase/auth';
@@ -26,6 +27,9 @@ appleProvider.addScope('name');
 
 export const facebookProvider = new FacebookAuthProvider();
 facebookProvider.addScope('email');
+
+export const githubProvider = new GithubAuthProvider();
+githubProvider.addScope('user:email');
 
 export const yahooProvider = new OAuthProvider('yahoo.com');
 yahooProvider.addScope('email');

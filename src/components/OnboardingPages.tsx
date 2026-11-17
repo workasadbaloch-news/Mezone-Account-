@@ -3,10 +3,12 @@ import { sendEmailVerification, signOut, User } from 'firebase/auth';
 import {
   ArrowRight,
   CheckCircle2,
+  KeyRound,
   Loader2,
   LocateFixed,
   LogOut,
   MailCheck,
+  Send,
   ShoppingBag,
   Sparkles,
 } from 'lucide-react';
@@ -17,14 +19,18 @@ import {
   detectUserCountryFromBrowserLocation,
   ensureUserProfile,
   formatLoginWayLabel,
-  getPendingInviteCode,
+  getRewardSystemStatus,
   lookupCountryOption,
+  markUserMailOtpVerified,
   normalizeInternationalPhone,
-  OFFICIAL_INVITE_CODE,
-  OFFICIAL_INVITER_NAME,
   savePendingProfileDraft,
   updatePersonalInformation,
 } from '../lib/mezoneDb';
+import {
+  getLocalMailOtpVerifiedAt,
+  requestMailOtp,
+  verifyMailOtpCode,
+} from '../lib/otpApi';
 import { BannerAdSlot } from '../lib/bannerAds';
 import { ThemeToggleButton } from '../lib/theme';
 import { GenderOption } from '../types/mezone';
@@ -49,6 +55,7 @@ export function CompleteProfilePage({
   const [phoneCode, setPhoneCode] = useState('+92');
   const [phoneLocal, setPhoneLocal] = useState('');
   const [region, setRegion] = useState('Pakistan (PKR / USD)');
+  const [address, setAddress] = useState('');
 
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [locationMessage, setLocationMessage] = useState<string | null>(null);
@@ -57,9 +64,35 @@ export function CompleteProfilePage({
   const [mailVerified, setMailVerified] = useState(user.emailVerified);
   const [verificationNote, setVerificationNote] = useState<string | null>(null);
 
+  const [otpVerifiedAt, setOtpVerifiedAt] = useState<string | null>(() =>
+    getLocalMailOtpVerifiedAt(user.uid)
+  );
+  const [otpStatusMsg, setOtpStatusMsg] = useState<string | null>(null);
+  const [otpInput, setOtpInput] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const autoOtpSentRef = useRef(false);
+
+  const dispatchNewAccountOtp = async () => {
+    if (!user.email) return;
+    setOtpSending(true);
+    try {
+      const res = await requestMailOtp(user, 'New Account Mail Verify');
+      if (res.ok) {
+        setOtpStatusMsg(
+          `6-digit Mail Verify code sent via Gmail API to ${res.toEmail || user.email}. Enter it below to verify your new account.`
+        );
+      } else {
+        setOtpStatusMsg(res.error || 'Could not dispatch Mail Verify code yet.');
+      }
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
   const runLocationDetection = async () => {
     setDetectingLocation(true);
-    setLocationMessage('Requesting location access to auto-fill Country & Cell Code...');
+    setLocationMessage('Requesting location access to auto-fill Address, Country & Cell Code...');
     try {
       const res = await detectUserCountryFromBrowserLocation();
       setLocationMessage(res.message);
@@ -67,6 +100,7 @@ export function CompleteProfilePage({
         if (res.countryName) setCountryName(res.countryName);
         if (res.dialCode) setPhoneCode(res.dialCode);
         if (res.region) setRegion(res.region);
+        if (res.address) setAddress(res.address);
       }
     } finally {
       setDetectingLocation(false);
@@ -77,13 +111,42 @@ export function CompleteProfilePage({
     void runLocationDetection();
   }, []);
 
+  useEffect(() => {
+    if (autoOtpSentRef.current || otpVerifiedAt || !user.email) return;
+    autoOtpSentRef.current = true;
+    void dispatchNewAccountOtp();
+  }, [user.uid, user.email]);
+
   const handleRefreshMailCheck = async () => {
     await user.reload();
     if (auth.currentUser?.emailVerified) {
       setMailVerified(true);
       setVerificationNote('Email verified! Your profile will sync directly to Mezone.');
     } else {
-      setVerificationNote('Verification still pending. Check your inbox or click Resend.');
+      setVerificationNote('Verification link check still pending, or use the 6-digit Mail Verify code above.');
+    }
+  };
+
+  const handleVerifyAccountOtp = async () => {
+    const cleaned = otpInput.trim().replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(cleaned)) {
+      setOtpStatusMsg('Enter the 6-digit Mail Verify code sent to your email.');
+      return;
+    }
+    setOtpVerifying(true);
+    try {
+      const res = await verifyMailOtpCode(user, cleaned);
+      if (!res.ok) {
+        setOtpStatusMsg(res.error || 'Invalid Mail Verify code.');
+        return;
+      }
+      const verifiedIso = res.verifiedAt || new Date().toISOString();
+      setOtpVerifiedAt(verifiedIso);
+      setOtpInput('');
+      setOtpStatusMsg(`Mail Verify complete for ${res.verifiedEmail || user.email}!`);
+      await markUserMailOtpVerified(user.uid, verifiedIso);
+    } finally {
+      setOtpVerifying(false);
     }
   };
 
@@ -111,11 +174,13 @@ export function CompleteProfilePage({
     setSaving(true);
     try {
       await user.reload();
-      const verifiedNow = Boolean(auth.currentUser?.emailVerified);
-      setMailVerified(verifiedNow);
+      const verifiedNow = Boolean(auth.currentUser?.emailVerified || otpVerifiedAt);
+      setMailVerified(Boolean(auth.currentUser?.emailVerified));
 
       if (verifiedNow) {
-        await ensureUserProfile(auth.currentUser || user, cleanedName);
+        await ensureUserProfile(auth.currentUser || user, cleanedName, undefined, {
+          allowUnverified: true,
+        });
         await updatePersonalInformation(user.uid, {
           displayName: cleanedName,
           phone: phoneCheck.formatted,
@@ -123,6 +188,7 @@ export function CompleteProfilePage({
           birthDate,
           gender,
           countryName,
+          address,
         });
         onProfileCompleted();
       } else {
@@ -133,9 +199,10 @@ export function CompleteProfilePage({
           birthDate,
           gender,
           countryName,
+          address,
         });
         setFormError(
-          `Mail verification is required for new accounts before shopping. Please verify ${user.email || 'your email'} via your inbox link, then click "I Have Verified".`
+          `New Account Mail Verify is required before continuing. Complete the 6-digit Mail Verify code sent to ${user.email || 'your email'} (or verify via inbox link).`
         );
       }
     } catch (err) {
@@ -145,7 +212,7 @@ export function CompleteProfilePage({
     }
   };
 
-  const pendingInviteCode = getPendingInviteCode();
+  const rewardStatus = getRewardSystemStatus();
 
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#111113] flex flex-col">
@@ -217,27 +284,89 @@ export function CompleteProfilePage({
             </div>
           </div>
 
-          {pendingInviteCode && (
-            <div className="p-3.5 rounded-lg bg-[#F0FDF4] border border-emerald-700/20 text-xs text-emerald-900 flex items-center justify-between gap-3">
+          {!rewardStatus.isActive && (
+            <div className="p-3.5 rounded-lg bg-[#FFF7ED] border border-[#EA580C]/25 text-xs text-[#9A3412] flex items-center justify-between gap-3">
               <span>
-                Referral Invite Code Linked:{' '}
-                <strong className="font-mono">{pendingInviteCode}</strong>
-                {pendingInviteCode === OFFICIAL_INVITE_CODE && (
-                  <span> · Ref User: {OFFICIAL_INVITER_NAME}</span>
-                )}
+                <strong>Reward Expired:</strong> Reward System starts on{' '}
+                <strong>{rewardStatus.startDateLabel}</strong> ({rewardStatus.countdownLabel}).
               </span>
             </div>
           )}
 
-          {!mailVerified && (
+          {/* Mail Verify (Auto-sent for new account) */}
+          {otpVerifiedAt ? (
+            <div className="p-3.5 rounded-lg bg-[#F0FDF4] border border-emerald-700/25 text-xs text-emerald-900 flex items-center justify-between gap-3">
+              <span className="inline-flex items-center gap-2 font-semibold">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Mail Verify Complete for {user.email} (Green Tick Active)</span>
+              </span>
+            </div>
+          ) : (
+            <div className="p-4 rounded-xl bg-[#FAF9F6] border border-black/10 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold text-[#111113] flex items-center gap-1.5">
+                    <MailCheck className="w-4 h-4 text-[#EA580C]" />
+                    <span>New Account Mail Verify (Gmail API)</span>
+                  </p>
+                  <p className="text-[11px] text-[#57534E] mt-0.5">
+                    {otpStatusMsg ||
+                      `We dispatch a 6-digit Mail Verify code to your new account email (${user.email}).`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={otpSending}
+                  onClick={() => void dispatchNewAccountOtp()}
+                  className="h-8 px-3 bg-white border border-black/15 rounded-lg text-[11px] font-semibold text-[#111113] hover:bg-[#EFECE5] disabled:opacity-60 inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  {otpSending ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Send className="w-3 h-3 text-[#EA580C]" />
+                  )}
+                  <span>{otpSending ? 'Sending...' : 'Send / Resend Mail Verify'}</span>
+                </button>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={otpInput}
+                  onChange={(e) =>
+                    setOtpInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))
+                  }
+                  placeholder="Enter 6-digit code"
+                  className="flex-1 h-9 px-3 text-sm font-mono tracking-[0.25em] bg-white border border-black/15 rounded-lg text-[#111113]"
+                />
+                <button
+                  type="button"
+                  disabled={otpVerifying || otpInput.length < 6}
+                  onClick={() => void handleVerifyAccountOtp()}
+                  className="h-9 px-4 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] disabled:opacity-50 inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  {otpVerifying ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <KeyRound className="w-3.5 h-3.5" />
+                  )}
+                  <span>{otpVerifying ? 'Verifying...' : 'Confirm Mail Verify'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!mailVerified && !otpVerifiedAt && (
             <div className="p-3.5 rounded-lg bg-[#FFF7ED] border border-[#EA580C]/30 text-xs text-[#9A3412] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="space-y-0.5">
                 <p className="font-semibold">
-                  Mail verification REQUIRED for {user.email}
+                  New Account Mail Verify ({user.email})
                 </p>
                 <p className="text-[11px]">
                   {verificationNote ||
-                    'New accounts must verify their email link before buying products. Open your inbox link, then click I Have Verified.'}
+                    'Complete the 6-digit Mail Verify code above or open the inbox link, then click I Have Verified.'}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -271,11 +400,11 @@ export function CompleteProfilePage({
             <div className="space-y-0.5">
               <p className="text-xs font-semibold text-[#111113] flex items-center gap-1.5">
                 <LocateFixed className="w-3.5 h-3.5 text-[#EA580C]" />
-                <span>Location Detection (Auto-Fill Country & Cell Code)</span>
+                <span>Location Detection (Auto-Fill Address, Country &amp; Cell Code)</span>
               </p>
               <p className="text-[11px] text-[#57534E]">
                 {locationMessage ||
-                  'Allow browser location access to auto-fill your Country Name and Cell Code.'}
+                  'Allow browser location access to auto-fill your Address, Country Name and Cell Code.'}
               </p>
             </div>
             <button
@@ -484,6 +613,35 @@ export function CompleteProfilePage({
               </div>
             </div>
 
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label
+                  htmlFor="cp-address"
+                  className="block text-xs font-medium text-[#111113]"
+                >
+                  Address (Auto-Filled with Location or Editable)
+                </label>
+                <button
+                  type="button"
+                  disabled={detectingLocation}
+                  onClick={runLocationDetection}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#C2410C] hover:underline cursor-pointer disabled:opacity-60"
+                >
+                  <LocateFixed className="w-3 h-3" />
+                  <span>{detectingLocation ? 'Detecting Address...' : 'Use Current Location'}</span>
+                </button>
+              </div>
+              <textarea
+                id="cp-address"
+                rows={2}
+                maxLength={240}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="House/Street, Area/Sector, City, Postal Code, Country"
+                className="w-full p-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg text-[#111113]"
+              />
+            </div>
+
             <div className="pt-3 flex flex-wrap items-center justify-between gap-3 border-t border-black/10">
               {mailVerified ? (
                 <button
@@ -590,9 +748,11 @@ export function ThankYouPage({ user, onGoToProducts }: ThankYouPageProps) {
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[#57534E]">Starter Wallet Bonus</span>
+              <span className="text-[#57534E]">Reward System Status</span>
               <span className="font-mono font-semibold text-[#C2410C] tabular-nums">
-                +100 PKR Ready
+                {getRewardSystemStatus().isActive
+                  ? '+100 PKR Ready'
+                  : 'Starts 20 November 2026'}
               </span>
             </div>
             <div className="flex items-center justify-between">

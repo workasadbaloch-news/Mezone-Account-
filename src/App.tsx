@@ -12,7 +12,6 @@ import { CompleteProfilePage, ThankYouPage } from './components/OnboardingPages'
 import { WelcomePage } from './components/WelcomePage';
 import { BannerAdsProvider } from './lib/bannerAds';
 import { auth } from './lib/firebase';
-import { sanitizeInviteCode, setPendingInviteCode } from './lib/mezoneDb';
 import { ThemeProvider } from './lib/theme';
 import { RouteView, WorkspaceTab } from './types/mezone';
 
@@ -25,22 +24,13 @@ function readInitialRoute(): RouteView {
   return 'welcome';
 }
 
-function readInviteFromUrl(): string {
-  const params = new URLSearchParams(window.location.search);
-  const code = sanitizeInviteCode(params.get('invite') || params.get('ref') || '');
-  if (code) {
-    setPendingInviteCode(code);
-  }
-  return code;
-}
-
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [route, setRoute] = useState<RouteView>(readInitialRoute);
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>('none');
+  const [sessionOrigin, setSessionOrigin] = useState<'register' | 'login' | null>(null);
   const [workspaceInitialTab, setWorkspaceInitialTab] = useState<WorkspaceTab>('product');
-  const [initialInviteCode] = useState<string>(readInviteFromUrl);
 
   const navigate = (nextRoute: RouteView) => {
     setRoute(nextRoute);
@@ -69,6 +59,7 @@ export default function App() {
       setUser(firebaseUser);
       if (!firebaseUser) {
         setOnboardingStep('none');
+        setSessionOrigin(null);
       }
       setAuthReady(true);
     });
@@ -76,6 +67,7 @@ export default function App() {
   }, []);
 
   const handleAuthenticated = (origin: 'register' | 'login') => {
+    setSessionOrigin(origin);
     if (origin === 'register') {
       setOnboardingStep('complete-profile');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -128,8 +120,10 @@ export default function App() {
               <MezoneWorkspace
                 user={user}
                 initialTab={workspaceInitialTab}
+                sessionOrigin={sessionOrigin}
                 onSignedOut={() => {
                   setOnboardingStep('none');
+                  setSessionOrigin(null);
                   navigate('welcome');
                 }}
               />
@@ -137,7 +131,6 @@ export default function App() {
           ) : route === 'register' ? (
             <AuthPages
               mode="register"
-              initialInviteCode={initialInviteCode}
               onSwitchMode={(next) => navigate(next)}
               onBackHome={() => navigate('welcome')}
               onAuthenticated={handleAuthenticated}

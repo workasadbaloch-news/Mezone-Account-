@@ -36,7 +36,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["google", "apple", "facebook", "yahoo", "email"],
+          "enum": ["google", "apple", "facebook", "github", "yahoo", "email"],
           "description": "Primary authentication provider used to create the Mezone account."
         },
         "inviteCode": {
@@ -50,6 +50,13 @@
           "type": "string",
           "description": "Optional invite code used when creating this account.",
           "maxLength": 24
+        },
+        "verificationId": {
+          "type": "string",
+          "description": "Permanent Verification ID assigned to this Mezone user.",
+          "minLength": 6,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_-]+$"
         },
         "photoUrl": {
           "type": "string",
@@ -70,6 +77,11 @@
           "type": "string",
           "description": "Country name for the shopper profile.",
           "maxLength": 60
+        },
+        "address": {
+          "type": "string",
+          "description": "Shopper street, area, city, and full delivery address.",
+          "maxLength": 240
         },
         "walletBalancePkr": {
           "type": "number",
@@ -115,6 +127,32 @@
         "dailyShoppingEarnedPkr": {
           "type": "number",
           "description": "Total PKR earned from approved daily shopping proof tracks."
+        },
+        "mailOtpVerified": {
+          "type": "boolean",
+          "description": "True once the logged-in account completes Mail OTP Verification."
+        },
+        "mailOtpVerifiedAt": {
+          "type": "string",
+          "description": "ISO timestamp when Mail OTP Verification succeeded.",
+          "maxLength": 40
+        },
+        "lastDailyAdminGrantDate": {
+          "type": "string",
+          "description": "YYYY-MM-DD date string of last daily 40,000 PKR admin credit.",
+          "maxLength": 16
+        },
+        "walletPinHash": {
+          "type": "string",
+          "description": "SHA-256 hex digest of the user's Wallet PIN.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "walletPinUpdatedAt": {
+          "type": "string",
+          "description": "ISO timestamp when Wallet PIN was created or changed.",
+          "maxLength": 40
         },
         "createdAt": {
           "type": "string",
@@ -547,6 +585,39 @@
         "orderReference", "trackDate", "proofNotes", "proofAttachment", "rewardPkr",
         "status", "adminNote", "createdAt", "updatedAt"
       ]
+    },
+    "CuratedCatalogItem": {
+      "title": "CuratedCatalogItem",
+      "description": "Admin-managed override (Edit, Delete, Hide/Unhide) for a Default Curated Catalog product.",
+      "type": "object",
+      "properties": {
+        "productCode": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "marketplace": { "type": "string", "enum": ["Temu", "Amazon"] },
+        "category": {
+          "type": "string",
+          "enum": ["Tech & Audio", "Home & Living", "Travel & Carry", "Beauty & Care", "Everyday Deals"]
+        },
+        "price": { "type": "number" },
+        "compareAtPrice": { "type": "number" },
+        "affiliateUrl": { "type": "string", "minLength": 8, "maxLength": 500 },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "imageFocusClass": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "published": { "type": "boolean" },
+        "deleted": { "type": "boolean" },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "productCode", "title", "marketplace", "category", "price", "compareAtPrice",
+        "affiliateUrl", "imageUrl", "description", "published", "deleted", "updatedBy", "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -569,6 +640,10 @@
     "/products/{productId}": {
       "schema": { "$ref": "#/entities/AffiliateProduct" },
       "description": "Published Temu and Amazon affiliate products managed by Admin."
+    },
+    "/curatedCatalog/{productId}": {
+      "schema": { "$ref": "#/entities/CuratedCatalogItem" },
+      "description": "Admin-managed Edit, Delete, Hide, and Unhide overrides for Default Curated Catalog items."
     },
     "/likedItems/{likedId}": {
       "schema": { "$ref": "#/entities/LikedItem" },

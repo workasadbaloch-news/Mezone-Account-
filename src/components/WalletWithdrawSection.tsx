@@ -1,20 +1,36 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { CalendarCheck, CheckCircle2, Coins, Landmark, Lock, ShieldCheck, Wallet } from 'lucide-react';
+import {
+  CalendarCheck,
+  CheckCircle2,
+  Clock,
+  Coins,
+  KeyRound,
+  Landmark,
+  Lock,
+  ShieldCheck,
+  Wallet,
+} from 'lucide-react';
 import {
   ACCOUNT_CREATE_BONUS_PKR,
+  ADMIN_DAILY_GRANT_PKR,
+  ADMIN_EMAIL,
   BUY_TWO_PRODUCTS_BONUS_PKR,
   calculateWithdrawalBreakdown,
+  changeWalletPin,
   claimCompleteProfileBonus,
   claimDailyTokensToPkr,
   collectDailyLoginToken,
-  DAILY_SHOPPING_REWARD_PKR,
+  createWalletPin,
   DAILY_TOKENS_CLAIM_PKR,
   DAILY_TOKENS_CYCLE_DAYS,
   DAILY_TOKENS_TARGET,
   getDailyTokenAmountForDay,
+  getRewardSystemStatus,
   getTodayDateKey,
   PROFILE_COMPLETE_BONUS_PKR,
+  REWARD_SYSTEM_START_LABEL,
   submitWithdrawalRequest,
+  verifyWalletPin,
   WITHDRAW_MIN_PKR,
 } from '../lib/mezoneDb';
 import { UserProfile, WithdrawalRecord } from '../types/mezone';
@@ -51,12 +67,22 @@ export function WalletWithdrawSection({
   onFlashStatus,
   onGoToPersonalInfo,
 }: WalletWithdrawSectionProps) {
-  const [busyAction, setBusyAction] = useState<'profileBonus' | 'dailyToken' | 'claimTokens' | 'withdraw' | null>(null);
+  const [busyAction, setBusyAction] = useState<
+    'profileBonus' | 'dailyToken' | 'claimTokens' | 'withdraw' | 'walletPin' | null
+  >(null);
   const [bankName, setBankName] = useState('JazzCash');
   const [holderName, setHolderName] = useState(profile?.displayName || '');
   const [cellNumber, setCellNumber] = useState(profile?.phone || '');
   const [withdrawAmount, setWithdrawAmount] = useState('1000');
+  const [withdrawPinInput, setWithdrawPinInput] = useState('');
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
+
+  // Wallet PIN Create / Change state
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [currentPin, setCurrentPin] = useState('');
+  const [pinMessage, setPinMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
   const syncedDefaultsRef = useRef({ name: Boolean(profile?.displayName), phone: Boolean(profile?.phone) });
 
   useEffect(() => {
@@ -70,7 +96,11 @@ export function WalletWithdrawSection({
     }
   }, [profile?.displayName, profile?.phone]);
 
-  const walletBalance = profile?.walletBalancePkr ?? ACCOUNT_CREATE_BONUS_PKR;
+  const rewardStatus = getRewardSystemStatus();
+  const isAdminWallet = userEmail.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const hasWalletPin = Boolean(profile?.walletPinHash && /^[a-f0-9]{64}$/.test(profile.walletPinHash));
+  const walletBalance =
+    profile?.walletBalancePkr ?? (rewardStatus.isActive ? ACCOUNT_CREATE_BONUS_PKR : 0);
   const approvedProductsCount = profile?.approvedProductsCount ?? 0;
   const loginTokens = profile?.loginTokens ?? 0;
   const dailyLoginDays = profile?.dailyLoginDays ?? 0;
@@ -79,14 +109,14 @@ export function WalletWithdrawSection({
   const checkedInToday = lastCheckInDate === todayKey;
   const nextDayNumber = Math.min(DAILY_TOKENS_CYCLE_DAYS, dailyLoginDays + 1);
   const nextDayTokens = getDailyTokenAmountForDay(nextDayNumber);
-  const canClaimTokens = loginTokens >= DAILY_TOKENS_TARGET;
+  const canClaimTokens = rewardStatus.isActive && loginTokens >= DAILY_TOKENS_TARGET;
 
   const hasCompletedProfile =
     Boolean(profile?.displayName?.trim()) &&
     (profile?.phone?.trim().length ?? 0) >= 7 &&
     Boolean(profile?.region?.trim());
 
-  const withdrawUnlocked = isVerified && walletBalance >= WITHDRAW_MIN_PKR;
+  const withdrawUnlocked = walletBalance >= WITHDRAW_MIN_PKR;
 
   const parsedAmount = Number(withdrawAmount) || 0;
   const breakdown = calculateWithdrawalBreakdown(parsedAmount);
@@ -124,18 +154,69 @@ export function WalletWithdrawSection({
     }
   };
 
+  const handleCreateWalletPin = async (e: FormEvent) => {
+    e.preventDefault();
+    setPinMessage(null);
+    setBusyAction('walletPin');
+    try {
+      const res = await createWalletPin({
+        uid,
+        pin: newPin,
+        confirmPin,
+      });
+      setPinMessage({ ok: res.ok, text: res.message });
+      if (res.ok) {
+        setNewPin('');
+        setConfirmPin('');
+        onFlashStatus(res.message);
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleChangeWalletPin = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!profile?.walletPinHash) return;
+    setPinMessage(null);
+    setBusyAction('walletPin');
+    try {
+      const res = await changeWalletPin({
+        uid,
+        currentPin,
+        newPin,
+        confirmNewPin: confirmPin,
+        storedHash: profile.walletPinHash,
+      });
+      setPinMessage({ ok: res.ok, text: res.message });
+      if (res.ok) {
+        setCurrentPin('');
+        setNewPin('');
+        setConfirmPin('');
+        onFlashStatus(res.message);
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const handleWithdrawSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setWithdrawError(null);
 
-    if (!isVerified) {
-      setWithdrawError('Please verify your Mezone email account before withdrawing.');
-      return;
-    }
     if (walletBalance < WITHDRAW_MIN_PKR) {
       setWithdrawError(
         `Withdraw is locked until your balance reaches ${WITHDRAW_MIN_PKR.toLocaleString()} PKR.`
       );
+      return;
+    }
+    if (!hasWalletPin) {
+      setWithdrawError('Create your Wallet PIN in the Wallet PIN Security card first before withdrawing.');
+      return;
+    }
+    const pinValid = await verifyWalletPin(withdrawPinInput, profile?.walletPinHash);
+    if (!pinValid) {
+      setWithdrawError('Invalid Wallet PIN. Enter your Wallet PIN to authorize withdrawal.');
       return;
     }
     if (parsedAmount < WITHDRAW_MIN_PKR) {
@@ -165,6 +246,7 @@ export function WalletWithdrawSection({
         currentTotalWithdrawn: profile?.totalWithdrawnPkr ?? 0,
       });
       setWithdrawAmount('1000');
+      setWithdrawPinInput('');
       onFlashStatus(
         `Withdrawal request submitted for ${parsedAmount.toLocaleString()} PKR (Net payout ${breakdown.netAmountPkr.toLocaleString()} PKR after 5% tax & 2% fee).`
       );
@@ -179,6 +261,58 @@ export function WalletWithdrawSection({
 
   return (
     <div className="space-y-8">
+      {/* Reward System Status Banner (Expire & 20 November 2026 Start Date) */}
+      <div
+        className={`rounded-xl border p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+          rewardStatus.isActive
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+            : 'bg-[#FFF7ED] border-[#EA580C]/30 text-[#9A3412]'
+        }`}
+      >
+        <div className="flex items-start gap-3">
+          <Clock className="w-5 h-5 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider">
+              {rewardStatus.isActive
+                ? 'Reward System Active'
+                : 'Reward Expired · Reward System Starts on 20 November 2026'}
+            </p>
+            <p className="text-xs mt-1 leading-relaxed">
+              {rewardStatus.isActive
+                ? `Mezone Reward System launched on ${REWARD_SYSTEM_START_LABEL}. Bonuses, daily tokens, and invite rewards are open.`
+                : `Previous reward bonuses have expired. New account bonuses, 30-day tokens, and referral rewards officially start on ${REWARD_SYSTEM_START_LABEL}.`}
+            </p>
+          </div>
+        </div>
+        <span className="text-xs font-mono font-semibold px-3 py-1.5 rounded-lg bg-white/80 border border-black/10 shrink-0">
+          {rewardStatus.countdownLabel}
+        </span>
+      </div>
+
+      {/* Admin Daily 40,000 PKR Credit Banner for work.asadbaloch804@gmail.com */}
+      {isAdminWallet && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-emerald-950">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-emerald-800">
+              Admin Account Daily Credit · {ADMIN_EMAIL}
+            </p>
+            <p className="text-sm font-semibold mt-0.5">
+              +{ADMIN_DAILY_GRANT_PKR.toLocaleString()} PKR / Day Auto-Added to Wallet
+            </p>
+            <p className="text-xs text-emerald-800 mt-0.5 font-mono">
+              Last Daily Credit Date: {profile?.lastDailyAdminGrantDate || todayKey}
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-emerald-300 text-xs font-semibold text-emerald-800 shrink-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <span>
+              {profile?.lastDailyAdminGrantDate === todayKey
+                ? `Today's +${ADMIN_DAILY_GRANT_PKR.toLocaleString()} PKR Added`
+                : 'Daily Grant Scheduled'}
+            </span>
+          </span>
+        </div>
+      )}
       {/* 4-Column Wallet KPI Strip */}
       <div className="grid grid-cols-2 lg:grid-cols-4 border border-black/10 rounded-xl bg-white divide-y lg:divide-y-0 lg:divide-x divide-black/10">
         <div className="p-6">
@@ -245,14 +379,30 @@ export function WalletWithdrawSection({
                     Account Create Bonus
                   </p>
                   <p className="text-xs text-[#57534E]">
-                    Credited when your Mezone account is registered and verified.
+                    {rewardStatus.isActive
+                      ? 'Credited when your Mezone account is created.'
+                      : `Reward expired — starts ${REWARD_SYSTEM_START_LABEL}.`}
                   </p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className="font-mono text-sm font-semibold text-[#111113] tabular-nums">
                     +{ACCOUNT_CREATE_BONUS_PKR} PKR
                   </p>
-                  <p className="text-xs font-semibold text-emerald-700">Credited</p>
+                  <p
+                    className={`text-xs font-semibold ${
+                      profile?.accountBonusClaimed
+                        ? 'text-emerald-700'
+                        : rewardStatus.isActive
+                          ? 'text-[#C2410C]'
+                          : 'text-[#57534E]'
+                    }`}
+                  >
+                    {profile?.accountBonusClaimed
+                      ? 'Credited'
+                      : rewardStatus.isActive
+                        ? 'Eligible'
+                        : 'Starts 20 Nov 2026'}
+                  </p>
                 </div>
               </div>
 
@@ -274,9 +424,11 @@ export function WalletWithdrawSection({
                       profile?.buyTwoBonusClaimed ? 'text-emerald-700' : 'text-[#C2410C]'
                     }`}
                   >
-                    {profile?.buyTwoBonusClaimed
-                      ? 'Credited'
-                      : `${Math.min(2, approvedProductsCount)} / 2 Products`}
+                    {!rewardStatus.isActive
+                      ? 'Starts 20 Nov 2026'
+                      : profile?.buyTwoBonusClaimed
+                        ? 'Credited'
+                        : `${Math.min(2, approvedProductsCount)} / 2 Products`}
                   </p>
                 </div>
               </div>
@@ -284,22 +436,26 @@ export function WalletWithdrawSection({
               <div className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-[#111113]">
-                    Verify Account & Complete Profile
+                    Complete Profile Bonus
                   </p>
                   <p className="text-xs text-[#57534E]">
-                    Verify email and save Name, Phone Number, and Region in Personal Information.
+                    Save Name, Phone Number, and Region in Personal Information.
                   </p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="font-mono text-sm font-semibold text-[#111113] tabular-nums">
                     +{PROFILE_COMPLETE_BONUS_PKR} PKR
                   </span>
-                  {profile?.profileBonusClaimed ? (
+                  {!rewardStatus.isActive ? (
+                    <span className="text-xs font-semibold text-[#57534E]">
+                      Starts 20 Nov 2026
+                    </span>
+                  ) : profile?.profileBonusClaimed ? (
                     <span className="text-xs font-semibold text-emerald-700 inline-flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       Claimed
                     </span>
-                  ) : hasCompletedProfile && isVerified ? (
+                  ) : hasCompletedProfile ? (
                     <button
                       type="button"
                       disabled={busyAction !== null}
@@ -317,25 +473,6 @@ export function WalletWithdrawSection({
                       Complete Profile
                     </button>
                   )}
-                </div>
-              </div>
-
-              <div className="py-3.5 flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm font-semibold text-[#111113]">
-                    Daily Shopping Track Reward ({DAILY_SHOPPING_REWARD_PKR} PKR / Track)
-                  </p>
-                  <p className="text-xs text-[#57534E]">
-                    Fill the Daily Shopping proof form with order screenshot. Reward credits on Admin approval.
-                  </p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="font-mono text-sm font-semibold text-[#111113] tabular-nums">
-                    +{(profile?.dailyShoppingEarnedPkr ?? 0).toFixed(2)} PKR
-                  </p>
-                  <p className="text-xs font-semibold text-emerald-700 tabular-nums">
-                    {profile?.dailyShoppingCount ?? 0} Approved Track(s)
-                  </p>
                 </div>
               </div>
             </div>
@@ -385,6 +522,7 @@ export function WalletWithdrawSection({
               <button
                 type="button"
                 disabled={
+                  !rewardStatus.isActive ||
                   !isVerified ||
                   checkedInToday ||
                   dailyLoginDays >= DAILY_TOKENS_CYCLE_DAYS ||
@@ -395,27 +533,150 @@ export function WalletWithdrawSection({
               >
                 <CalendarCheck className="w-4 h-4" />
                 <span>
-                  {checkedInToday
-                    ? 'Collected Today'
-                    : dailyLoginDays >= DAILY_TOKENS_CYCLE_DAYS
-                      ? '30/30 Days Completed'
-                      : `Collect Day ${nextDayNumber} (+${nextDayTokens} Tokens)`}
+                  {!rewardStatus.isActive
+                    ? 'Starts 20 Nov 2026'
+                    : checkedInToday
+                      ? 'Collected Today'
+                      : dailyLoginDays >= DAILY_TOKENS_CYCLE_DAYS
+                        ? '30/30 Days Completed'
+                        : `Collect Day ${nextDayNumber} (+${nextDayTokens} Tokens)`}
                 </span>
               </button>
 
               <button
                 type="button"
-                disabled={!canClaimTokens || busyAction !== null}
+                disabled={!rewardStatus.isActive || !canClaimTokens || busyAction !== null}
                 onClick={handleClaimTokens}
                 className="h-10 px-4 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] disabled:opacity-50 cursor-pointer"
               >
-                {busyAction === 'claimTokens'
-                  ? 'Claiming...'
-                  : canClaimTokens
-                    ? `Claim 1,000 Tokens → ${DAILY_TOKENS_CLAIM_PKR} PKR`
-                    : `Need ${(DAILY_TOKENS_TARGET - loginTokens).toLocaleString()} More Tokens`}
+                {!rewardStatus.isActive
+                  ? 'Reward Starts 20 Nov 2026'
+                  : busyAction === 'claimTokens'
+                    ? 'Claiming...'
+                    : canClaimTokens
+                      ? `Claim 1,000 Tokens → ${DAILY_TOKENS_CLAIM_PKR} PKR`
+                      : `Need ${(DAILY_TOKENS_TARGET - loginTokens).toLocaleString()} More Tokens`}
               </button>
             </div>
+          </div>
+
+          {/* Wallet PIN Create & Change Security Card */}
+          <div className="bg-white border border-black/10 rounded-xl p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium text-[#C2410C] mb-0.5">
+                  Wallet PIN Security
+                </p>
+                <h2 className="text-base font-semibold text-[#111113]">
+                  {hasWalletPin ? 'Change Wallet PIN' : 'Create Wallet PIN'}
+                </h2>
+                <p className="text-xs text-[#57534E] mt-1">
+                  {hasWalletPin
+                    ? 'Your 4–8 digit Wallet PIN is active and required for withdrawals.'
+                    : 'Set a 4–8 digit Wallet PIN to secure your wallet and authorize withdrawals.'}
+                </p>
+              </div>
+              <KeyRound className="w-5 h-5 text-[#EA580C] shrink-0" />
+            </div>
+
+            {pinMessage && (
+              <div
+                className={`p-3 rounded-lg text-xs border ${
+                  pinMessage.ok
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-[#FFF7ED] border-[#EA580C]/40 text-[#9A3412]'
+                }`}
+              >
+                {pinMessage.text}
+              </div>
+            )}
+
+            <form
+              onSubmit={hasWalletPin ? handleChangeWalletPin : handleCreateWalletPin}
+              className="space-y-3"
+            >
+              {hasWalletPin && (
+                <div>
+                  <label
+                    htmlFor="wpin-current"
+                    className="block text-xs font-medium text-[#111113] mb-1"
+                  >
+                    Current Wallet PIN
+                  </label>
+                  <input
+                    id="wpin-current"
+                    type="password"
+                    inputMode="numeric"
+                    required
+                    minLength={4}
+                    maxLength={8}
+                    value={currentPin}
+                    onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                    placeholder="Enter current 4–8 digit PIN"
+                    className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="wpin-new"
+                    className="block text-xs font-medium text-[#111113] mb-1"
+                  >
+                    {hasWalletPin ? 'New Wallet PIN' : 'Create Wallet PIN (4–8 digits)'}
+                  </label>
+                  <input
+                    id="wpin-new"
+                    type="password"
+                    inputMode="numeric"
+                    required
+                    minLength={4}
+                    maxLength={8}
+                    value={newPin}
+                    onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                    placeholder="e.g. 1234"
+                    className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="wpin-confirm"
+                    className="block text-xs font-medium text-[#111113] mb-1"
+                  >
+                    Confirm Wallet PIN
+                  </label>
+                  <input
+                    id="wpin-confirm"
+                    type="password"
+                    inputMode="numeric"
+                    required
+                    minLength={4}
+                    maxLength={8}
+                    value={confirmPin}
+                    onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                    placeholder="Re-enter PIN"
+                    className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={busyAction !== null}
+                className="w-full h-10 px-4 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] disabled:opacity-50 inline-flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>
+                  {busyAction === 'walletPin'
+                    ? 'Saving Wallet PIN...'
+                    : hasWalletPin
+                      ? 'Change Wallet PIN'
+                      : 'Create Wallet PIN'}
+                </span>
+              </button>
+            </form>
           </div>
         </div>
 
@@ -561,6 +822,28 @@ export function WalletWithdrawSection({
                 />
               </div>
 
+              <div>
+                <label
+                  htmlFor="wd-pin"
+                  className="block text-xs font-medium text-[#111113] mb-1"
+                >
+                  Wallet PIN {hasWalletPin ? '(Required)' : '(Create PIN First)'}
+                </label>
+                <input
+                  id="wd-pin"
+                  type="password"
+                  inputMode="numeric"
+                  required
+                  minLength={4}
+                  maxLength={8}
+                  disabled={!hasWalletPin}
+                  value={withdrawPinInput}
+                  onChange={(e) => setWithdrawPinInput(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                  placeholder={hasWalletPin ? 'Enter your 4–8 digit Wallet PIN' : 'Create Wallet PIN on the left first'}
+                  className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg disabled:opacity-60"
+                />
+              </div>
+
               {/* Tax (5%) & Fee (2%) Live Breakdown */}
               <div className="p-3.5 rounded-lg bg-[#FAF9F6] border border-black/10 space-y-1.5 text-xs">
                 <div className="flex items-center justify-between text-[#57534E]">
@@ -591,16 +874,18 @@ export function WalletWithdrawSection({
 
               <button
                 type="submit"
-                disabled={!withdrawUnlocked || busyAction !== null}
+                disabled={!withdrawUnlocked || !hasWalletPin || busyAction !== null}
                 className="w-full h-10 px-4 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 cursor-pointer"
               >
-                {!withdrawUnlocked && <Lock className="w-3.5 h-3.5" />}
+                {(!withdrawUnlocked || !hasWalletPin) && <Lock className="w-3.5 h-3.5" />}
                 <span>
                   {busyAction === 'withdraw'
                     ? 'Submitting Withdrawal...'
-                    : withdrawUnlocked
-                      ? `Submit Withdrawal (${breakdown.netAmountPkr.toLocaleString()} PKR Net)`
-                      : 'Withdraw Locked (Verify & Reach 1,000 PKR)'}
+                    : !hasWalletPin && withdrawUnlocked
+                      ? 'Create Wallet PIN First'
+                      : withdrawUnlocked
+                        ? `Submit Withdrawal (${breakdown.netAmountPkr.toLocaleString()} PKR Net)`
+                        : 'Withdraw Locked (Reach 1,000 PKR)'}
                 </span>
               </button>
             </form>

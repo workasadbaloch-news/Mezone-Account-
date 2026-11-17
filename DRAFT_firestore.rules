@@ -46,7 +46,11 @@ service cloud.firestore {
       return val is string && val.size() >= 1 && val.size() <= maxLen;
     }
 
-    // Entity 1: UserProfile (with PKR Wallet, Bonuses, and 30-Day Daily Login Tokens)
+    function isRewardSystemActive() {
+      return request.time >= timestamp.date(2026, 11, 20);
+    }
+
+    // Entity 1: UserProfile (with PKR Wallet, Bonuses, Address, Permanent Verification ID, Wallet PIN, and Admin Daily Grant)
     function isValidUserProfile(data) {
       return data.uid is string
         && isValidId(data.uid)
@@ -54,17 +58,24 @@ service cloud.firestore {
         && isNonEmptyString(data.email, 160)
         && data.phone is string && data.phone.size() <= 32
         && data.region is string && data.region.size() >= 2 && data.region.size() <= 40
-        && data.provider in ['google', 'apple', 'facebook', 'yahoo', 'email']
+        && data.provider in ['google', 'apple', 'facebook', 'github', 'yahoo', 'email']
         && data.inviteCode is string
         && data.inviteCode.size() >= 4
         && data.inviteCode.size() <= 24
         && data.inviteCode.matches('^[A-Z0-9_-]+$')
         && data.invitedByCode is string && data.invitedByCode.size() <= 24
+        && (!('verificationId' in data) || (
+          data.verificationId is string
+          && data.verificationId.size() >= 6
+          && data.verificationId.size() <= 32
+          && data.verificationId.matches('^[A-Z0-9_-]+$')
+        ))
         && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500))
         && (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 16))
         && (!('gender' in data) || data.gender in ['', 'Male', 'Female', 'Other', 'Prefer not to say'])
         && (!('countryName' in data) || (data.countryName is string && data.countryName.size() <= 60))
-        && data.walletBalancePkr is number && data.walletBalancePkr >= 0 && data.walletBalancePkr <= 10000000
+        && (!('address' in data) || (data.address is string && data.address.size() <= 240))
+        && data.walletBalancePkr is number && data.walletBalancePkr >= 0 && data.walletBalancePkr <= 1000000000
         && data.accountBonusClaimed is bool
         && data.profileBonusClaimed is bool
         && data.buyTwoBonusClaimed is bool
@@ -72,9 +83,14 @@ service cloud.firestore {
         && data.loginTokens is number && data.loginTokens >= 0 && data.loginTokens <= 10000
         && data.dailyLoginDays is number && data.dailyLoginDays >= 0 && data.dailyLoginDays <= 30
         && data.lastCheckInDate is string && data.lastCheckInDate.size() <= 16
-        && data.totalWithdrawnPkr is number && data.totalWithdrawnPkr >= 0 && data.totalWithdrawnPkr <= 10000000
+        && data.totalWithdrawnPkr is number && data.totalWithdrawnPkr >= 0 && data.totalWithdrawnPkr <= 1000000000
         && (!('dailyShoppingCount' in data) || (data.dailyShoppingCount is number && data.dailyShoppingCount >= 0 && data.dailyShoppingCount <= 100000))
         && (!('dailyShoppingEarnedPkr' in data) || (data.dailyShoppingEarnedPkr is number && data.dailyShoppingEarnedPkr >= 0 && data.dailyShoppingEarnedPkr <= 1000000))
+        && (!('mailOtpVerified' in data) || data.mailOtpVerified is bool)
+        && (!('mailOtpVerifiedAt' in data) || (data.mailOtpVerifiedAt is string && data.mailOtpVerifiedAt.size() <= 40))
+        && (!('lastDailyAdminGrantDate' in data) || (data.lastDailyAdminGrantDate is string && data.lastDailyAdminGrantDate.size() <= 16))
+        && (!('walletPinHash' in data) || (data.walletPinHash is string && data.walletPinHash.size() == 64 && data.walletPinHash.matches('^[a-f0-9]{64}$')))
+        && (!('walletPinUpdatedAt' in data) || (data.walletPinUpdatedAt is string && data.walletPinUpdatedAt.size() <= 40))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -270,11 +286,36 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    // Entity 13: CuratedCatalogItem (Admin Edit/Delete/Hide/Unhide overrides for Default Curated Catalog)
+    function isValidCuratedCatalogItem(data) {
+      return data.productCode is string
+        && data.productCode.size() >= 2
+        && data.productCode.size() <= 32
+        && data.productCode.matches('^[a-zA-Z0-9_\\-]+$')
+        && isNonEmptyString(data.title, 140)
+        && data.marketplace in ['Temu', 'Amazon']
+        && data.category in ['Tech & Audio', 'Home & Living', 'Travel & Carry', 'Beauty & Care', 'Everyday Deals']
+        && data.price is number && data.price > 0
+        && data.compareAtPrice is number && data.compareAtPrice >= 0
+        && data.affiliateUrl is string
+        && data.affiliateUrl.size() >= 8
+        && data.affiliateUrl.size() <= 500
+        && data.affiliateUrl.matches('^https://.*')
+        && isNonEmptyString(data.imageUrl, 500)
+        && (!('imageFocusClass' in data) || (data.imageFocusClass is string && data.imageFocusClass.size() <= 60))
+        && isNonEmptyString(data.description, 600)
+        && data.published is bool
+        && data.deleted is bool
+        && data.updatedBy is string
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
     // /users/{userId}
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if false;
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(userId)
         && isOwner(userId)
         && incoming().keys().hasAll([
@@ -287,18 +328,31 @@ service cloud.firestore {
         ])
         && incoming().keys().hasOnly([
           'uid', 'displayName', 'email', 'phone', 'region',
-          'provider', 'inviteCode', 'invitedByCode',
-          'photoUrl', 'birthDate', 'gender', 'countryName',
+          'provider', 'inviteCode', 'invitedByCode', 'verificationId',
+          'photoUrl', 'birthDate', 'gender', 'countryName', 'address',
           'walletBalancePkr', 'accountBonusClaimed', 'profileBonusClaimed',
           'buyTwoBonusClaimed', 'approvedProductsCount', 'loginTokens',
           'dailyLoginDays', 'lastCheckInDate', 'totalWithdrawnPkr',
           'dailyShoppingCount', 'dailyShoppingEarnedPkr',
+          'mailOtpVerified', 'mailOtpVerifiedAt',
+          'lastDailyAdminGrantDate', 'walletPinHash', 'walletPinUpdatedAt',
           'createdAt', 'updatedAt'
         ])
         && isValidUserProfile(incoming())
         && incoming().uid == request.auth.uid
-        && incoming().walletBalancePkr == 100
-        && incoming().accountBonusClaimed == true
+        && (
+          (isAdminEmail()
+            && incoming().walletBalancePkr == 40000
+            && incoming().accountBonusClaimed == false
+            && 'lastDailyAdminGrantDate' in incoming()
+            && incoming().lastDailyAdminGrantDate.size() == 10) ||
+          (!isRewardSystemActive()
+            && incoming().walletBalancePkr == 0
+            && incoming().accountBonusClaimed == false) ||
+          (isRewardSystemActive()
+            && incoming().walletBalancePkr == 100
+            && incoming().accountBonusClaimed == true)
+        )
         && incoming().profileBonusClaimed == false
         && incoming().buyTwoBonusClaimed == false
         && incoming().approvedProductsCount == 0
@@ -310,12 +364,13 @@ service cloud.firestore {
         && (!('dailyShoppingEarnedPkr' in incoming()) || incoming().dailyShoppingEarnedPkr == 0)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(userId)
         && isValidUserProfile(incoming())
         && incoming().uid == existing().uid
         && incoming().provider == existing().provider
         && incoming().createdAt == existing().createdAt
+        && (!('verificationId' in existing()) || incoming().verificationId == existing().verificationId)
         && incoming().updatedAt == request.time
         && (
           (isOwner(userId)
@@ -329,8 +384,8 @@ service cloud.firestore {
           (isOwner(userId) && (
             // Legacy wallet/invite backfill for pre-existing users
             (!('walletBalancePkr' in existing())
-              && incoming().walletBalancePkr == 100
-              && incoming().accountBonusClaimed == true
+              && ((isRewardSystemActive() && incoming().walletBalancePkr == 100 && incoming().accountBonusClaimed == true) ||
+                  (!isRewardSystemActive() && incoming().walletBalancePkr == 0 && incoming().accountBonusClaimed == false))
               && incoming().profileBonusClaimed == false
               && incoming().buyTwoBonusClaimed == false
               && incoming().approvedProductsCount == 0
@@ -339,30 +394,62 @@ service cloud.firestore {
               && incoming().lastCheckInDate == ''
               && incoming().totalWithdrawnPkr == 0
               && incoming().diff(existing()).affectedKeys().hasOnly([
-                'inviteCode', 'invitedByCode',
+                'inviteCode', 'invitedByCode', 'verificationId',
                 'walletBalancePkr', 'accountBonusClaimed', 'profileBonusClaimed',
                 'buyTwoBonusClaimed', 'approvedProductsCount', 'loginTokens',
                 'dailyLoginDays', 'lastCheckInDate', 'totalWithdrawnPkr', 'updatedAt'
               ])) ||
+            // Admin daily 40,000 PKR credit for work.asadbaloch804@gmail.com
+            (isAdminEmail()
+              && incoming().walletBalancePkr == existing().walletBalancePkr + 40000
+              && 'lastDailyAdminGrantDate' in incoming()
+              && incoming().lastDailyAdminGrantDate.size() == 10
+              && (!('lastDailyAdminGrantDate' in existing()) || incoming().lastDailyAdminGrantDate != existing().lastDailyAdminGrantDate)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['walletBalancePkr', 'lastDailyAdminGrantDate', 'updatedAt'])) ||
             (
               incoming().inviteCode == existing().inviteCode && (
+                // Action: Assign Permanent Verification ID once if missing
+                (!('verificationId' in existing())
+                  && 'verificationId' in incoming()
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['verificationId', 'updatedAt'])) ||
+                // Action: Create Wallet PIN (once when unset)
+                (!('walletPinHash' in existing())
+                  && 'walletPinHash' in incoming()
+                  && incoming().walletPinHash is string
+                  && incoming().walletPinHash.size() == 64
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['walletPinHash', 'walletPinUpdatedAt', 'updatedAt'])) ||
+                // Action: Change Wallet PIN (when already set)
+                ('walletPinHash' in existing()
+                  && 'walletPinHash' in incoming()
+                  && incoming().walletPinHash is string
+                  && incoming().walletPinHash.size() == 64
+                  && incoming().walletPinHash != existing().walletPinHash
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['walletPinHash', 'walletPinUpdatedAt', 'updatedAt'])) ||
                 // Action: Update Personal Info (phone requires country code + without leading 0)
                 ((incoming().phone == '' || incoming().phone.matches('^\\+[1-9][0-9]{6,15}$'))
                   && incoming().diff(existing()).affectedKeys().hasOnly([
-                    'displayName', 'phone', 'region', 'birthDate', 'gender', 'countryName', 'updatedAt'
+                    'displayName', 'phone', 'region', 'birthDate', 'gender', 'countryName', 'address', 'updatedAt'
                   ])) ||
                 // Action: Sync read-only Provider Profile DP URL
                 incoming().diff(existing()).affectedKeys().hasOnly(['photoUrl', 'updatedAt']) ||
-                // Action: Link Invite Code once
-                (existing().invitedByCode == '' && incoming().diff(existing()).affectedKeys().hasOnly(['invitedByCode', 'updatedAt'])) ||
-                // Action: Claim 50 PKR Verify & Complete Profile Bonus
-                (existing().profileBonusClaimed == false
+                // Action: Mark Mail OTP / Mail Verify Verified (Verification Center)
+                (incoming().mailOtpVerified == true
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['mailOtpVerified', 'mailOtpVerifiedAt', 'updatedAt'])) ||
+                // Action: Link Invite Code once (within 24 hours of account creation)
+                (existing().invitedByCode == ''
+                  && existing().createdAt is timestamp
+                  && request.time <= existing().createdAt + duration.value(24, 'h')
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['invitedByCode', 'updatedAt'])) ||
+                // Action: Claim 50 PKR Verify & Complete Profile Bonus (Starts 20 November 2026)
+                (isRewardSystemActive()
+                  && existing().profileBonusClaimed == false
                   && incoming().profileBonusClaimed == true
                   && existing().phone.size() >= 7
                   && incoming().walletBalancePkr == existing().walletBalancePkr + 50
                   && incoming().diff(existing()).affectedKeys().hasOnly(['profileBonusClaimed', 'walletBalancePkr', 'updatedAt'])) ||
-                // Action: Daily Login Token Check-in (30 days -> 1,000 tokens)
-                (incoming().lastCheckInDate != existing().lastCheckInDate
+                // Action: Daily Login Token Check-in (Starts 20 November 2026)
+                (isRewardSystemActive()
+                  && incoming().lastCheckInDate != existing().lastCheckInDate
                   && incoming().lastCheckInDate.size() == 10
                   && existing().dailyLoginDays < 30
                   && incoming().dailyLoginDays == existing().dailyLoginDays + 1
@@ -370,8 +457,9 @@ service cloud.firestore {
                   && (incoming().loginTokens - existing().loginTokens) <= 34
                   && incoming().loginTokens <= 1000
                   && incoming().diff(existing()).affectedKeys().hasOnly(['dailyLoginDays', 'loginTokens', 'lastCheckInDate', 'updatedAt'])) ||
-                // Action: Claim 1,000 Tokens -> 50 PKR
-                (existing().loginTokens >= 1000
+                // Action: Claim 1,000 Tokens -> 50 PKR (Starts 20 November 2026)
+                (isRewardSystemActive()
+                  && existing().loginTokens >= 1000
                   && incoming().loginTokens == existing().loginTokens - 1000
                   && incoming().dailyLoginDays == 0
                   && incoming().walletBalancePkr == existing().walletBalancePkr + 50
@@ -395,7 +483,7 @@ service cloud.firestore {
     match /inviteCodes/{code} {
       allow get: if isSignedIn() && isValidId(code);
       allow list: if false;
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(code)
         && incoming().keys().hasAll(['code', 'ownerUid', 'createdAt'])
         && incoming().keys().hasOnly(['code', 'ownerUid', 'ownerName', 'createdAt'])
@@ -403,7 +491,7 @@ service cloud.firestore {
         && incoming().code == code
         && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time;
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(code)
         && existing().ownerUid == request.auth.uid
         && incoming().code == existing().code
@@ -426,9 +514,12 @@ service cloud.firestore {
         resource.data.inviteeUid == request.auth.uid ||
         isAdminEmail()
       );
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(inviteeUid)
         && inviteeUid == request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.createdAt is timestamp
+        && request.time <= get(/databases/$(database)/documents/users/$(request.auth.uid)).data.createdAt + duration.value(24, 'h')
         && incoming().keys().hasAll([
           'inviteeUid', 'inviteeName', 'inviteeEmail', 'inviterUid', 'inviterCode',
           'approvedProductCount', 'requiredProductCount', 'rewardPkr',
@@ -470,7 +561,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (
         resource.data.userId == request.auth.uid || isAdminEmail()
       );
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(proofId)
         && incoming().keys().hasAll([
           'userId', 'userName', 'userEmail', 'marketplace', 'productTitle',
@@ -535,11 +626,43 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(productId);
     }
 
+    // /curatedCatalog/{productId}
+    match /curatedCatalog/{productId} {
+      allow get: if isSignedIn() && isValidId(productId);
+      allow list: if isSignedIn() && (resource.data.deleted is bool || isAdminEmail());
+      allow create: if isAdmin()
+        && isValidId(productId)
+        && incoming().keys().hasAll([
+          'productCode', 'title', 'marketplace', 'category', 'price', 'compareAtPrice',
+          'affiliateUrl', 'imageUrl', 'description', 'published', 'deleted',
+          'updatedBy', 'updatedAt'
+        ])
+        && incoming().keys().hasOnly([
+          'productCode', 'title', 'marketplace', 'category', 'price', 'compareAtPrice',
+          'affiliateUrl', 'imageUrl', 'imageFocusClass', 'description', 'published', 'deleted',
+          'updatedBy', 'updatedAt'
+        ])
+        && isValidCuratedCatalogItem(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(productId)
+        && isValidCuratedCatalogItem(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'productCode', 'title', 'marketplace', 'category', 'price', 'compareAtPrice',
+          'affiliateUrl', 'imageUrl', 'imageFocusClass', 'description', 'published', 'deleted',
+          'updatedBy', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
     // /likedItems/{likedId}
     match /likedItems/{likedId} {
       allow get: if isSignedIn() && isValidId(likedId) && existing().userId == request.auth.uid;
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(likedId)
         && incoming().keys().hasAll([
           'userId', 'productId', 'title', 'marketplace', 'category',
@@ -563,7 +686,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (
         resource.data.userId == request.auth.uid || isAdminEmail()
       );
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(withdrawalId)
         && incoming().keys().hasAll([
           'userId', 'userName', 'userEmail', 'bankName', 'holderName', 'cellNumber',
@@ -626,7 +749,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (
         resource.data.userId == request.auth.uid || isAdminEmail()
       );
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(ticketId)
         && incoming().keys().hasAll([
           'userId', 'userName', 'userEmail', 'topic', 'subject',
@@ -662,7 +785,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (
         resource.data.published == true || resource.data.userId == request.auth.uid || isAdminEmail()
       );
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidId(feedbackId)
         && incoming().keys().hasAll([
           'userId', 'userName', 'rating', 'category', 'comment',
@@ -678,7 +801,7 @@ service cloud.firestore {
         && incoming().adminReply == ''
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidId(feedbackId)
         && isValidHelpcenterFeedback(incoming())
         && incoming().userId == existing().userId
@@ -716,7 +839,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // /dailyShoppingTracks/{trackId}
+    // /dailyShoppingTracks/{trackId} - Disabled (Daily Shopping Track · +0.99 PKR is not allowed)
     match /dailyShoppingTracks/{trackId} {
       allow get: if isSignedIn() && isValidId(trackId) && (
         existing().userId == request.auth.uid || isAdmin()
@@ -724,35 +847,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (
         resource.data.userId == request.auth.uid || isAdminEmail()
       );
-      allow create: if isVerifiedUser()
-        && isValidId(trackId)
-        && incoming().keys().hasAll([
-          'userId', 'userName', 'userEmail', 'marketplace', 'productTitle', 'productCode',
-          'orderReference', 'trackDate', 'proofNotes', 'proofAttachment', 'rewardPkr',
-          'status', 'adminNote', 'createdAt', 'updatedAt'
-        ])
-        && incoming().keys().hasOnly([
-          'userId', 'userName', 'userEmail', 'marketplace', 'productTitle', 'productCode',
-          'orderReference', 'trackDate', 'proofNotes', 'proofAttachment', 'rewardPkr',
-          'status', 'adminNote', 'createdAt', 'updatedAt'
-        ])
-        && isValidDailyShoppingTrack(incoming())
-        && incoming().userId == request.auth.uid
-        && incoming().rewardPkr == 0.99
-        && incoming().status == 'pending'
-        && incoming().adminNote == ''
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isAdmin()
-        && isValidId(trackId)
-        && existing().status == 'pending'
-        && isValidDailyShoppingTrack(incoming())
-        && incoming().userId == existing().userId
-        && incoming().rewardPkr == existing().rewardPkr
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
-        && incoming().status in ['approved', 'rejected']
-        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+      allow create, update: if false;
       allow delete: if isAdmin() || (
         isSignedIn() && isValidId(trackId) && existing().userId == request.auth.uid && existing().status == 'pending'
       );

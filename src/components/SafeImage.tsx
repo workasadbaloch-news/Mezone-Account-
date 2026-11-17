@@ -16,8 +16,8 @@ export function SafeImage({ src, alt, className = '', fallbackTitle }: SafeImage
 
   useEffect(() => {
     setHasError(false);
-    setActiveSrc(src);
     setTriedDriveFallback(false);
+    setActiveSrc(src);
   }, [src]);
 
   const handleImageError = () => {
@@ -30,6 +30,7 @@ export function SafeImage({ src, alt, className = '', fallbackTitle }: SafeImage
       setActiveSrc(fallback);
       return;
     }
+
     setHasError(true);
   };
 

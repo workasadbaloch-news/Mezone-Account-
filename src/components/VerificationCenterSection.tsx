@@ -21,27 +21,28 @@ import {
 import {
   appleProvider,
   facebookProvider,
+  githubProvider,
   googleProvider,
   yahooProvider,
 } from '../lib/firebase';
 import {
+  buildPermanentVerificationId,
   buildWhatsAppOrderProofUrl,
-  DAILY_SHOPPING_REWARD_PKR,
   formatLoginWayLabel,
   WHATSAPP_PROOF_DISPLAY,
 } from '../lib/mezoneDb';
+import { getLocalMailOtpVerifiedAt } from '../lib/otpApi';
 import {
-  DailyShoppingTrackRecord,
   OrderProofRecord,
   UserProfile,
 } from '../types/mezone';
+import { GmailOtpSection } from './GmailOtpSection';
 
 interface VerificationCenterSectionProps {
   user: User;
   isVerified: boolean;
   profile: UserProfile | null;
   myOrderProofs: OrderProofRecord[];
-  myDailyTracks?: DailyShoppingTrackRecord[];
   onRefreshVerification: () => Promise<void>;
   onFlashStatus: (message: string) => void;
   onGoToPersonalInfo: () => void;
@@ -52,20 +53,25 @@ export function VerificationCenterSection({
   isVerified,
   profile,
   myOrderProofs,
-  myDailyTracks = [],
   onRefreshVerification,
   onFlashStatus,
   onGoToPersonalInfo,
 }: VerificationCenterSectionProps) {
   const [sendingMail, setSendingMail] = useState(false);
   const [refreshingMail, setRefreshingMail] = useState(false);
-  const [copiedUid, setCopiedUid] = useState(false);
+  const [copiedVerificationId, setCopiedVerificationId] = useState(false);
 
-  const [socialBusy, setSocialBusy] = useState<'google' | 'apple' | 'facebook' | 'yahoo' | null>(null);
+  const [socialBusy, setSocialBusy] = useState<
+    'google' | 'apple' | 'facebook' | 'github' | 'yahoo' | null
+  >(null);
   const [socialMessage, setSocialMessage] = useState<string | null>(null);
   const [confirmedSocialProviders, setConfirmedSocialProviders] = useState<Record<string, boolean>>(
     {}
   );
+  const [sessionOtpVerifiedAt, setSessionOtpVerifiedAt] = useState<string | null>(() =>
+    getLocalMailOtpVerifiedAt(user.uid)
+  );
+  const mailOtpVerified = Boolean(profile?.mailOtpVerified || sessionOtpVerifiedAt);
 
   const [orderFilter, setOrderFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [previewProof, setPreviewProof] = useState<OrderProofRecord | null>(null);
@@ -73,6 +79,7 @@ export function VerificationCenterSection({
   const googleProviderInfo = user.providerData.find((p) => p.providerId === 'google.com');
   const appleProviderInfo = user.providerData.find((p) => p.providerId === 'apple.com');
   const facebookProviderInfo = user.providerData.find((p) => p.providerId === 'facebook.com');
+  const githubProviderInfo = user.providerData.find((p) => p.providerId === 'github.com');
   const yahooProviderInfo = user.providerData.find((p) => p.providerId === 'yahoo.com');
   const passwordProviderInfo = user.providerData.find((p) => p.providerId === 'password');
 
@@ -125,7 +132,7 @@ export function VerificationCenterSection({
   };
 
   const handleSocialAction = async (
-    target: 'google' | 'apple' | 'facebook' | 'yahoo',
+    target: 'google' | 'apple' | 'facebook' | 'github' | 'yahoo',
     mode: 'connect' | 'confirm'
   ) => {
     setSocialMessage(null);
@@ -134,6 +141,7 @@ export function VerificationCenterSection({
       google: { provider: googleProvider, label: 'Google' },
       apple: { provider: appleProvider, label: 'Apple' },
       facebook: { provider: facebookProvider, label: 'Facebook' },
+      github: { provider: githubProvider, label: 'GitHub' },
       yahoo: { provider: yahooProvider, label: 'Yahoo' },
     } as const;
     const { provider, label: providerLabel } = providerMap[target];
@@ -192,84 +200,174 @@ export function VerificationCenterSection({
         </p>
       </div>
 
-      {/* 1. ACCOUNT VERIFICATION & MAIL VERIFICATION */}
+      {/* 1. ACCOUNT VERIFICATION & MAIL VERIFY (NEW ACCOUNT) */}
       <section className="bg-white border border-black/10 rounded-xl p-6 sm:p-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-black/10">
           <div className="flex items-start gap-3">
             <MailCheck className="w-5 h-5 text-[#EA580C] shrink-0 mt-0.5" />
             <div>
               <h2 className="text-base font-semibold text-[#111113]">
-                Account Verification & Mail Verification
+                Account Status &amp; Mail Verify (New Account)
               </h2>
               <p className="text-xs text-[#57534E] mt-0.5">
-                Mail Verification is required for all new accounts to unlock Product Buying
-                (Shop Now), your Referral Invite ID, +100 PKR account bonus, +50 PKR profile bonus,
-                and PKR withdrawals.
+                Mail Verify is used for New Accounts (with Gmail API Green Tick). Existing Login
+                Accounts do not need Mail Verification to shop or access Wallet &amp; Invite Program.
               </p>
             </div>
           </div>
 
-          <span
-            className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-              isVerified ? 'text-emerald-700' : 'text-[#C2410C]'
-            }`}
-          >
-            {isVerified ? (
-              <>
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Account & Mail Verified</span>
-              </>
-            ) : (
-              <>
-                <Clock className="w-4 h-4" />
-                <span>Mail Verification Pending</span>
-              </>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold ${
+                isVerified || mailOtpVerified
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                  : 'bg-[#FAF9F6] border-black/15 text-[#111113]'
+              }`}
+            >
+              {isVerified || mailOtpVerified ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>Mail Verified</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4 text-[#EA580C]" />
+                  <span>Login Account Active</span>
+                </>
+              )}
+            </span>
+
+            {mailOtpVerified && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-700">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>Green Tick Active</span>
+              </span>
             )}
-          </span>
+          </div>
+        </div>
+
+        {/* Profile With Green Tick Summary */}
+        <div className="p-4 sm:p-5 rounded-xl bg-[#FAF9F6] border border-black/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="relative shrink-0">
+              <div className="w-12 h-12 rounded-full overflow-hidden bg-[#EFECE5] border border-black/10 flex items-center justify-center">
+                {profile?.photoUrl || user.photoURL ? (
+                  <img
+                    src={profile?.photoUrl || user.photoURL || ''}
+                    alt={profile?.displayName || user.displayName || 'Profile'}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="font-display text-sm font-bold text-[#111113]">
+                    {(profile?.displayName || user.displayName || user.email || 'MZ')
+                      .trim()
+                      .slice(0, 2)
+                      .toUpperCase()}
+                  </span>
+                )}
+              </div>
+              <span
+                title="Green Tick Verified Profile"
+                className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-emerald-600 text-white border-2 border-white flex items-center justify-center"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              </span>
+            </div>
+
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <p className="text-sm font-semibold text-[#111113] truncate">
+                  {profile?.displayName || user.displayName || 'Mezone Shopper'}
+                </p>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-semibold text-emerald-700">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                  <span>Profile · Green Tick</span>
+                </span>
+              </div>
+              <p className="text-xs text-[#57534E] truncate mt-0.5">
+                {profile?.countryName ? `${profile.countryName} · ` : ''}
+                {profile?.phone || 'Add Cell Number in Personal Information'} ·{' '}
+                {formatLoginWayLabel(user)}
+              </p>
+            </div>
+          </div>
+
+          <div className="text-left sm:text-right shrink-0">
+            <p className="text-[11px] font-medium text-[#57534E]">Profile Verification</p>
+            <p className="text-xs font-semibold text-emerald-700 inline-flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{isProfileComplete ? 'Complete Profile · Green Tick' : 'Profile Active · Green Tick'}</span>
+            </p>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-xl bg-[#FAF9F6] border border-black/10 space-y-1">
-            <p className="text-[11px] font-medium text-[#57534E]">Primary Mail</p>
+            <p className="text-[11px] font-medium text-[#57534E]">Mail</p>
             <p className="text-xs font-mono font-semibold text-[#111113] break-all">
               {user.email || 'No email'}
             </p>
-            <p className={`text-[11px] font-semibold ${isVerified ? 'text-emerald-700' : 'text-[#C2410C]'}`}>
-              {isVerified ? 'Verified' : 'Unverified'}
-            </p>
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              <span
+                className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
+                  isVerified || mailOtpVerified ? 'text-emerald-700' : 'text-[#57534E]'
+                }`}
+              >
+                {(isVerified || mailOtpVerified) && (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                )}
+                <span>
+                  {isVerified || mailOtpVerified
+                    ? 'Mail Verified (Green Tick)'
+                    : 'Login Account (No Verification Needed)'}
+                </span>
+              </span>
+            </div>
           </div>
 
           <div className="p-4 rounded-xl bg-[#FAF9F6] border border-black/10 space-y-1">
-            <p className="text-[11px] font-medium text-[#57534E]">Account ID (Firebase UID)</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-[#57534E]">Verification ID (Permanent)</p>
+              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                Permanent
+              </span>
+            </div>
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-mono font-semibold text-[#111113] truncate">
-                {user.uid}
+                {profile?.verificationId || buildPermanentVerificationId(user.uid)}
               </p>
               <button
                 type="button"
                 onClick={async () => {
+                  const vid = profile?.verificationId || buildPermanentVerificationId(user.uid);
                   try {
-                    await navigator.clipboard.writeText(user.uid);
-                    setCopiedUid(true);
-                    window.setTimeout(() => setCopiedUid(false), 1800);
-                    onFlashStatus('Account ID copied.');
+                    await navigator.clipboard.writeText(vid);
+                    setCopiedVerificationId(true);
+                    window.setTimeout(() => setCopiedVerificationId(false), 1800);
+                    onFlashStatus(`Permanent Verification ID copied (${vid}).`);
                   } catch {
                     // ignore clipboard failure
                   }
                 }}
                 className="text-xs text-[#57534E] hover:text-[#111113] shrink-0 cursor-pointer"
-                aria-label="Copy Account ID"
+                aria-label="Copy Permanent Verification ID"
               >
-                {copiedUid ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedVerificationId ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
               </button>
             </div>
-            <p className="text-[11px] text-[#57534E]">{formatLoginWayLabel(user)}</p>
+            <p className="text-[11px] text-[#57534E] font-mono truncate">UID: {user.uid}</p>
           </div>
 
           <div className="p-4 rounded-xl bg-[#FAF9F6] border border-black/10 space-y-1">
-            <p className="text-[11px] font-medium text-[#57534E]">Profile Verification</p>
-            <p className="text-xs font-semibold text-[#111113]">
-              {isProfileComplete ? 'Complete Profile Saved' : 'Details Missing'}
+            <p className="text-[11px] font-medium text-[#57534E]">Profile With Green Tick</p>
+            <p className="text-xs font-semibold text-emerald-700 inline-flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>{isProfileComplete ? 'Verified Profile' : 'Active Profile'}</span>
             </p>
             <p className="text-[11px] text-[#57534E]">
               {profile?.phone ? `Cell: ${profile.phone}` : 'Add Cell Number (no leading 0)'}
@@ -279,10 +377,10 @@ export function VerificationCenterSection({
           <div className="p-4 rounded-xl bg-[#FAF9F6] border border-black/10 space-y-1">
             <p className="text-[11px] font-medium text-[#57534E]">Referral Invite ID</p>
             <p className="text-xs font-mono font-semibold text-[#111113]">
-              {isVerified && profile?.inviteCode ? profile.inviteCode : 'Locked until Mail Verified'}
+              {profile?.inviteCode || 'Generating...'}
             </p>
             <p className="text-[11px] text-[#57534E]">
-              {isVerified ? 'Ready to invite users (500 PKR)' : 'Verify mail first'}
+              Ready to invite users (500 PKR)
             </p>
           </div>
         </div>
@@ -296,7 +394,7 @@ export function VerificationCenterSection({
               className="inline-flex items-center gap-2 h-10 px-4 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] disabled:opacity-60 cursor-pointer"
             >
               <MailCheck className="w-4 h-4" />
-              <span>{sendingMail ? 'Sending...' : 'Send Verification Mail'}</span>
+              <span>{sendingMail ? 'Sending...' : 'Send Mail Verify'}</span>
             </button>
           )}
 
@@ -320,6 +418,18 @@ export function VerificationCenterSection({
           </button>
         </div>
       </section>
+
+      {/* 1B. MAIL OTP VERIFICATION (GMAIL API) */}
+      <GmailOtpSection
+        user={user}
+        mailOtpVerified={mailOtpVerified}
+        mailOtpVerifiedAt={profile?.mailOtpVerifiedAt || sessionOtpVerifiedAt || ''}
+        onFlashStatus={onFlashStatus}
+        onOtpVerified={async (_email, verifiedAt) => {
+          setSessionOtpVerifiedAt(verifiedAt);
+          await onRefreshVerification();
+        }}
+      />
 
       {/* 2. SOCIAL LOGIN CONFIRM MAIL VERIFICATION */}
       <section className="bg-white border border-black/10 rounded-xl p-6 sm:p-8 space-y-5">
@@ -488,6 +598,52 @@ export function VerificationCenterSection({
             )}
           </div>
 
+          {/* GitHub Social Login Card */}
+          <div className="p-5 rounded-xl bg-[#FAF9F6] border border-black/10 flex flex-col justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-[#111113]">Github Login</p>
+                <span
+                  className={`text-[11px] font-semibold ${
+                    githubProviderInfo ? 'text-emerald-700' : 'text-[#57534E]'
+                  }`}
+                >
+                  {githubProviderInfo ? 'Connected' : 'Not Connected'}
+                </span>
+              </div>
+              <p className="text-xs font-mono text-[#57534E] break-all">
+                {githubProviderInfo?.email || 'No GitHub mail linked'}
+              </p>
+              {githubProviderInfo && (
+                <p className="text-[11px] text-emerald-700 font-medium">
+                  {confirmedSocialProviders.github || isVerified
+                    ? 'Social Mail Confirmed'
+                    : 'Confirm Social Mail'}
+                </p>
+              )}
+            </div>
+
+            {githubProviderInfo ? (
+              <button
+                type="button"
+                disabled={socialBusy !== null}
+                onClick={() => handleSocialAction('github', 'confirm')}
+                className="h-9 px-3.5 bg-white border border-black/15 text-xs font-semibold text-[#111113] rounded-lg hover:bg-[#EFECE5] disabled:opacity-60 cursor-pointer"
+              >
+                {socialBusy === 'github' ? 'Confirming...' : 'Confirm GitHub Mail'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={socialBusy !== null}
+                onClick={() => handleSocialAction('github', 'connect')}
+                className="h-9 px-3.5 bg-[#24292F] text-white text-xs font-semibold rounded-lg hover:bg-[#1B1F23] disabled:opacity-60 cursor-pointer"
+              >
+                {socialBusy === 'github' ? 'Connecting...' : 'Connect & Confirm GitHub'}
+              </button>
+            )}
+          </div>
+
           {/* Yahoo Social Login Card */}
           <div className="p-5 rounded-xl bg-[#FAF9F6] border border-black/10 flex flex-col justify-between gap-4">
             <div className="space-y-1.5">
@@ -551,20 +707,20 @@ export function VerificationCenterSection({
                 {passwordProviderInfo?.email || user.email || '—'}
               </p>
               <p className="text-[11px] text-[#57534E]">
-                {isVerified
-                  ? 'Mail verified for Mezone account access.'
-                  : 'Use Send Verification Mail above to confirm inbox.'}
+                {isVerified || mailOtpVerified
+                  ? 'Mail Verify completed for this Mezone account.'
+                  : 'Login Accounts are ready without Mail Verification. New Accounts use Mail Verify above.'}
               </p>
             </div>
 
             <span
               className={`inline-flex items-center justify-center h-9 px-3.5 rounded-lg text-xs font-semibold border ${
-                isVerified
+                isVerified || mailOtpVerified
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                  : 'bg-[#FFF7ED] border-[#EA580C]/30 text-[#9A3412]'
+                  : 'bg-[#FAF9F6] border-black/15 text-[#111113]'
               }`}
             >
-              {isVerified ? 'Mail Confirmed' : 'Pending Mail Confirmation'}
+              {isVerified || mailOtpVerified ? 'Mail Verified' : 'Login Account Ready'}
             </span>
           </div>
         </div>
@@ -694,82 +850,6 @@ export function VerificationCenterSection({
                     <MessageCircle className="w-3.5 h-3.5" />
                     <span>WhatsApp {WHATSAPP_PROOF_DISPLAY}</span>
                   </a>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* 4. DAILY SHOPPING TRACK VERIFICATION HISTORY (0.99 PKR / APPROVED TRACK) */}
-      <section className="bg-white border border-black/10 rounded-xl overflow-hidden">
-        <div className="px-6 py-5 border-b border-black/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium text-[#C2410C]">
-              Daily Shopping Proof History (+{DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR / Track)
-            </p>
-            <h2 className="text-base font-semibold text-[#111113]">
-              Daily Shopping Track Verification ({myDailyTracks.length})
-            </h2>
-            <p className="text-xs text-[#57534E] mt-0.5 tabular-nums">
-              {myDailyTracks.filter((d) => d.status === 'approved').length} Approved · +
-              {(
-                myDailyTracks.filter((d) => d.status === 'approved').length *
-                DAILY_SHOPPING_REWARD_PKR
-              ).toFixed(2)}{' '}
-              PKR Credited
-            </p>
-          </div>
-        </div>
-
-        {myDailyTracks.length === 0 ? (
-          <div className="p-8 text-center text-xs text-[#57534E]">
-            No daily shopping track proof submissions yet.
-          </div>
-        ) : (
-          <ul className="divide-y divide-black/10">
-            {myDailyTracks.map((track) => (
-              <li
-                key={track.id}
-                className="p-6 flex flex-col md:flex-row md:items-center justify-between gap-4"
-              >
-                <div className="space-y-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold text-[#111113]">
-                      {track.productTitle}{' '}
-                      <span className="font-mono text-xs text-[#57534E]">
-                        ({track.productCode})
-                      </span>
-                    </p>
-                    <span
-                      className={`inline-flex items-center gap-1 text-xs font-semibold capitalize ${
-                        track.status === 'approved'
-                          ? 'text-emerald-700'
-                          : track.status === 'rejected'
-                            ? 'text-red-700'
-                            : 'text-[#C2410C]'
-                      }`}
-                    >
-                      {track.status === 'approved' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                      {track.status === 'rejected' && <XCircle className="w-3.5 h-3.5" />}
-                      {track.status === 'pending' && <Clock className="w-3.5 h-3.5" />}
-                      <span>
-                        {track.status === 'approved' ? 'Approved (+0.99 PKR)' : track.status}
-                      </span>
-                    </span>
-                  </div>
-                  <p className="text-xs text-[#57534E]">
-                    {track.marketplace} · Order{' '}
-                    <span className="font-mono text-[#111113]">{track.orderReference}</span> ·
-                    Date <span className="font-mono">{track.trackDate}</span>
-                  </p>
-                  <p className="text-xs text-[#57534E]">Proof: {track.proofNotes}</p>
-                  {track.adminNote && (
-                    <p className="text-xs text-[#111113]">
-                      <span className="font-semibold text-[#C2410C]">Admin Note: </span>
-                      {track.adminNote}
-                    </p>
-                  )}
                 </div>
               </li>
             ))}

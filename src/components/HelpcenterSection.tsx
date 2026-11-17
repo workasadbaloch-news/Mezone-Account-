@@ -167,12 +167,6 @@ export function HelpcenterSection({
   const handleSubmitTicket = async (e: FormEvent) => {
     e.preventDefault();
     setTicketError(null);
-    if (!isVerified) {
-      setTicketError(
-        'Please verify your email address in Verification Center before submitting a support ticket.'
-      );
-      return;
-    }
 
     setSubmittingTicket(true);
     try {
@@ -197,12 +191,6 @@ export function HelpcenterSection({
   const handleSubmitFeedback = async (e: FormEvent) => {
     e.preventDefault();
     setFeedbackError(null);
-    if (!isVerified) {
-      setFeedbackError(
-        'Please verify your email address in Verification Center before submitting a rating and feedback.'
-      );
-      return;
-    }
 
     setSubmittingFeedback(true);
     try {

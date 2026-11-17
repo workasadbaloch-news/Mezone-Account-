@@ -12,22 +12,18 @@ import {
   appleProvider,
   auth,
   facebookProvider,
+  githubProvider,
   googleProvider,
   yahooProvider,
 } from '../lib/firebase';
 import {
   ensureUserProfile,
-  getPendingInviteCode,
-  OFFICIAL_INVITE_CODE,
-  OFFICIAL_INVITER_NAME,
-  sanitizeInviteCode,
   setPendingInviteCode,
 } from '../lib/mezoneDb';
 import { ThemeToggleButton } from '../lib/theme';
 
 interface AuthPagesProps {
   mode: 'register' | 'login';
-  initialInviteCode?: string;
   onSwitchMode: (mode: 'register' | 'login') => void;
   onBackHome: () => void;
   onAuthenticated: (origin: 'register' | 'login') => void;
@@ -86,6 +82,14 @@ function YahooIcon() {
   );
 }
 
+function GithubIcon() {
+  return (
+    <svg className="w-4 h-4 shrink-0 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+    </svg>
+  );
+}
+
 function mapAuthError(err: unknown, providerLabel: string): string {
   const code = (err as { code?: string })?.code || '';
   if (code === 'auth/popup-closed-by-user') {
@@ -118,48 +122,41 @@ function mapAuthError(err: unknown, providerLabel: string): string {
 
 export function AuthPages({
   mode,
-  initialInviteCode,
   onSwitchMode,
   onBackHome,
   onAuthenticated,
 }: AuthPagesProps) {
   const [showOptionalEmail, setShowOptionalEmail] = useState(mode === 'login');
-  const [inviteCode, setInviteCode] = useState(
-    () => sanitizeInviteCode(initialInviteCode || getPendingInviteCode())
-  );
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busyAction, setBusyAction] = useState<
-    'google' | 'apple' | 'facebook' | 'yahoo' | 'email' | null
+    'google' | 'apple' | 'facebook' | 'github' | 'yahoo' | 'email' | null
   >(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
 
   const isRegister = mode === 'register';
 
-  const persistInviteIfProvided = () => {
-    setPendingInviteCode(inviteCode);
-  };
-
   const handleSocialPopup = async (
-    target: 'google' | 'apple' | 'facebook' | 'yahoo'
+    target: 'google' | 'apple' | 'facebook' | 'github' | 'yahoo'
   ) => {
     setErrorMessage(null);
     setVerificationNotice(null);
-    persistInviteIfProvided();
+    setPendingInviteCode('');
     setBusyAction(target);
     const providerMap = {
       google: { provider: googleProvider, label: 'Google' },
       apple: { provider: appleProvider, label: 'Apple' },
       facebook: { provider: facebookProvider, label: 'Facebook' },
+      github: { provider: githubProvider, label: 'GitHub' },
       yahoo: { provider: yahooProvider, label: 'Yahoo' },
     } as const;
     const { provider, label } = providerMap[target];
 
     try {
       const cred = await signInWithPopup(auth, provider);
-      await ensureUserProfile(cred.user, undefined, inviteCode);
+      await ensureUserProfile(cred.user, undefined, undefined, { allowUnverified: true });
       onAuthenticated(mode);
     } catch (err) {
       setErrorMessage(mapAuthError(err, label));
@@ -186,7 +183,7 @@ export function AuthPages({
       return;
     }
 
-    persistInviteIfProvided();
+    setPendingInviteCode('');
     setBusyAction('email');
     try {
       if (isRegister) {
@@ -200,14 +197,12 @@ export function AuthPages({
           // Ignore verification email rate limits
         }
         setVerificationNotice(
-          `Your Mezone account was created for ${trimmedEmail}. A verification link has been sent to activate your invite code & profile.`
+          `Your Mezone new account was created for ${trimmedEmail}. Complete Mail Verify on the next step.`
         );
         onAuthenticated('register');
       } else {
         const cred = await signInWithEmailAndPassword(auth, trimmedEmail, password);
-        if (cred.user.emailVerified) {
-          await ensureUserProfile(cred.user);
-        }
+        await ensureUserProfile(cred.user, undefined, undefined, { allowUnverified: true });
         onAuthenticated('login');
       }
     } catch (err) {
@@ -256,8 +251,8 @@ export function AuthPages({
             </h1>
             <p className="text-sm text-[#57534E] leading-relaxed">
               {isRegister
-                ? 'Choose Google Login (Recommend), Apple Login, Facebook Login (Hot), Yahoo Login, or Mezone Login.'
-                : 'Sign in with Google, Apple, Facebook, Yahoo, or your Mezone credentials.'}
+                ? 'Choose Google Login (Recommend), Apple Login, Facebook Login (Hot), GitHub Login, Yahoo Login, or Mezone Login.'
+                : 'Sign in with Google, Apple, Facebook, GitHub, Yahoo, or your Mezone credentials.'}
             </p>
           </div>
 
@@ -277,56 +272,7 @@ export function AuthPages({
             </div>
           )}
 
-          {isRegister && (
-            <div className="mb-5 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <label
-                  htmlFor="mezone-invite-code"
-                  className="block text-xs font-medium text-[#111113]"
-                >
-                  User Invite Code (Optional · Referral Program)
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInviteCode(OFFICIAL_INVITE_CODE);
-                    setPendingInviteCode(OFFICIAL_INVITE_CODE);
-                  }}
-                  className="text-[11px] font-mono font-semibold text-[#C2410C] hover:underline cursor-pointer"
-                >
-                  Use Official: {OFFICIAL_INVITE_CODE}
-                </button>
-              </div>
-              <input
-                id="mezone-invite-code"
-                type="text"
-                maxLength={24}
-                value={inviteCode}
-                onChange={(e) => {
-                  const val = sanitizeInviteCode(e.target.value);
-                  setInviteCode(val);
-                  setPendingInviteCode(val);
-                }}
-                placeholder={`e.g. ${OFFICIAL_INVITE_CODE}`}
-                className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg text-[#111113] placeholder:text-[#78716C] focus:outline-none focus:ring-2 focus:ring-[#EA580C]/30 focus:border-[#EA580C]"
-              />
-              <p className="text-[11px] text-[#57534E]">
-                {inviteCode === OFFICIAL_INVITE_CODE ? (
-                  <span className="font-semibold text-emerald-700">
-                    Official Invite Code selected · Ref User: {OFFICIAL_INVITER_NAME}
-                  </span>
-                ) : (
-                  <span>
-                    Don&apos;t have a code? Use Official Invite Code{' '}
-                    <span className="font-mono font-semibold text-[#111113]">
-                      {OFFICIAL_INVITE_CODE}
-                    </span>{' '}
-                    (New accounts require Mail Verification).
-                  </span>
-                )}
-              </p>
-            </div>
-          )}
+
 
           {/* Primary Auth Providers: Google (Recommend), Apple, Facebook (Hot), Yahoo & Mezone Login */}
           <div className="space-y-3">
@@ -383,6 +329,23 @@ export function AuthPages({
               <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide rounded bg-[#EA580C] text-white">
                 Hot
               </span>
+            </button>
+
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => handleSocialPopup('github')}
+              className="w-full h-11 px-4 flex items-center justify-between gap-3 bg-[#24292F] rounded-lg text-sm font-semibold text-white hover:bg-[#1B1F23] transition-colors disabled:opacity-60 cursor-pointer"
+            >
+              <span className="flex items-center gap-3">
+                {busyAction === 'github' ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <GithubIcon />
+                )}
+                <span>Github Login</span>
+              </span>
+              <span className="text-[11px] font-normal text-white/75">Developer ID</span>
             </button>
 
             <button

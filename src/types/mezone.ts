@@ -2,14 +2,23 @@ export type RouteView = 'welcome' | 'register' | 'login' | 'workspace';
 
 export type WorkspaceTab =
   | 'product'
-  | 'liked'
+  | 'history'
   | 'referral'
+  | 'wallet'
+  | 'chat'
   | 'verification'
   | 'helpcenter'
   | 'policy'
   | 'setting';
 
-export type SettingSection = 'personal' | 'wallet' | 'admin' | 'delete' | 'logout';
+export type SettingSection =
+  | 'personal'
+  | 'verification'
+  | 'linked'
+  | 'wallet'
+  | 'admin'
+  | 'delete'
+  | 'logout';
 
 export type AdminCenterTab =
   | 'productCenter'
@@ -18,7 +27,7 @@ export type AdminCenterTab =
   | 'bannerAds'
   | 'adminSetting';
 
-export type AuthProviderType = 'google' | 'apple' | 'facebook' | 'yahoo' | 'email';
+export type AuthProviderType = 'google' | 'apple' | 'facebook' | 'github' | 'yahoo' | 'email';
 
 export type MarketplaceType = 'Temu' | 'Amazon';
 
@@ -59,10 +68,16 @@ export interface AffiliateProduct {
   imageFocusClass?: string;
   description: string;
   published: boolean;
+  deleted?: boolean;
   isCuratedDefault?: boolean;
   createdBy?: string;
+  updatedBy?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface CuratedCatalogOverride extends AffiliateProduct {
+  deleted: boolean;
 }
 
 export interface UserProfile {
@@ -74,10 +89,12 @@ export interface UserProfile {
   provider: AuthProviderType;
   inviteCode: string;
   invitedByCode: string;
+  verificationId?: string;
   photoUrl?: string;
   birthDate?: string;
   gender?: GenderOption;
   countryName?: string;
+  address?: string;
   walletBalancePkr: number;
   accountBonusClaimed: boolean;
   profileBonusClaimed: boolean;
@@ -89,6 +106,11 @@ export interface UserProfile {
   totalWithdrawnPkr: number;
   dailyShoppingCount?: number;
   dailyShoppingEarnedPkr?: number;
+  mailOtpVerified?: boolean;
+  mailOtpVerifiedAt?: string;
+  lastDailyAdminGrantDate?: string;
+  walletPinHash?: string;
+  walletPinUpdatedAt?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
 }

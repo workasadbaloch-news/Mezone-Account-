@@ -17,16 +17,27 @@ import {
 } from 'firebase/firestore';
 import {
   Check,
+  Clock,
   Copy,
   ExternalLink,
   Heart,
+  History,
+  BookOpen,
+  LifeBuoy,
+  Link2,
+  Loader2,
   LocateFixed,
   Lock,
   LogOut,
+  Menu,
   Search,
+  Settings,
   ShieldAlert,
+  ShieldCheck,
+  ShoppingBag,
   Upload,
   User as UserIcon,
+  Users,
   Wallet,
   X,
   MessageCircle,
@@ -38,6 +49,7 @@ import {
   auth,
   db,
   facebookProvider,
+  githubProvider,
   googleProvider,
   handleFirestoreError,
   OperationType,
@@ -45,16 +57,17 @@ import {
 } from '../lib/firebase';
 import {
   ACCOUNT_CREATE_BONUS_PKR,
+  ADMIN_DAILY_GRANT_PKR,
   ADMIN_EMAIL,
   buildWhatsAppOrderProofUrl,
   COUNTRY_NAME_OPTIONS,
   COUNTRY_PHONE_OPTIONS,
-  DAILY_SHOPPING_REWARD_PKR,
   deleteMezoneAccountData,
   detectUserCountryFromBrowserLocation,
   ensureUserProfile,
   formatLoginWayLabel,
-  getTodayDateKey,
+  getAccountInviteWindow,
+  getRewardSystemStatus,
   linkUserToInviteCode,
   lookupCountryOption,
   lookupInviteCodeOwner,
@@ -62,8 +75,8 @@ import {
   OFFICIAL_INVITE_CODE,
   OFFICIAL_INVITER_NAME,
   parseInternationalPhone,
+  REWARD_SYSTEM_START_LABEL,
   removeLikedItemById,
-  submitDailyShoppingTrack,
   submitOrderProof,
   toggleLikedProduct,
   updatePersonalInformation,
@@ -72,7 +85,7 @@ import {
 import { ThemeToggleButton, useTheme } from '../lib/theme';
 import {
   AffiliateProduct,
-  DailyShoppingTrackRecord,
+  CuratedCatalogOverride,
   GenderOption,
   HelpcenterFeedbackRecord,
   LikedItemRecord,
@@ -88,6 +101,8 @@ import {
 } from '../types/mezone';
 import { AdminCenterSection } from './AdminCenterSection';
 import { HelpcenterSection } from './HelpcenterSection';
+import { LinkedLoginSection } from './LinkedLoginSection';
+import { ReferenceAnalyticsSection } from './ReferenceAnalyticsSection';
 import { SafeImage } from './SafeImage';
 import { VerificationCenterSection } from './VerificationCenterSection';
 import { WalletWithdrawSection } from './WalletWithdrawSection';
@@ -95,6 +110,7 @@ import { WalletWithdrawSection } from './WalletWithdrawSection';
 interface MezoneWorkspaceProps {
   user: User;
   initialTab?: WorkspaceTab;
+  sessionOrigin?: 'register' | 'login' | null;
   onSignedOut: () => void;
 }
 
@@ -140,6 +156,7 @@ async function compressImageToDataUrl(file: File): Promise<string> {
 export function MezoneWorkspace({
   user,
   initialTab = 'product',
+  sessionOrigin = null,
   onSignedOut,
 }: MezoneWorkspaceProps) {
   const { theme, setTheme } = useTheme();
@@ -148,21 +165,27 @@ export function MezoneWorkspace({
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [publishedProducts, setPublishedProducts] = useState<AffiliateProduct[]>([]);
+  const [curatedOverrides, setCuratedOverrides] = useState<CuratedCatalogOverride[]>([]);
   const [likedItems, setLikedItems] = useState<LikedItemRecord[]>([]);
   const [myInvitedReferrals, setMyInvitedReferrals] = useState<ReferralRecord[]>([]);
   const [myInviterRecord, setMyInviterRecord] = useState<ReferralRecord | null>(null);
   const [myOrderProofs, setMyOrderProofs] = useState<OrderProofRecord[]>([]);
-  const [myDailyTracks, setMyDailyTracks] = useState<DailyShoppingTrackRecord[]>([]);
   const [myWithdrawals, setMyWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [mySupportTickets, setMySupportTickets] = useState<SupportTicketRecord[]>([]);
   const [adminOrderProofs, setAdminOrderProofs] = useState<OrderProofRecord[]>([]);
-  const [adminDailyTracks, setAdminDailyTracks] = useState<DailyShoppingTrackRecord[]>([]);
   const [adminAllReferrals, setAdminAllReferrals] = useState<ReferralRecord[]>([]);
   const [adminWithdrawals, setAdminWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [adminSupportTickets, setAdminSupportTickets] = useState<SupportTicketRecord[]>([]);
   const [feedbackList, setFeedbackList] = useState<HelpcenterFeedbackRecord[]>([]);
-  const [verifyChecked, setVerifyChecked] = useState(user.emailVerified);
-  const [referralSubTab, setReferralSubTab] = useState<'referral' | 'daily' | 'wallet'>('referral');
+  const [verifyChecked, setVerifyChecked] = useState(
+    Boolean(user.emailVerified || sessionOrigin === 'login')
+  );
+  const [, setAuthRefreshTick] = useState(0);
+  const [referralSubTab, setReferralSubTab] = useState<'referral' | 'wallet'>('referral');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [historySubTab, setHistorySubTab] = useState<
+    'all' | 'orders' | 'liked' | 'withdrawals'
+  >('all');
 
   // Filters
   const [selectedMarketplace, setSelectedMarketplace] = useState<'All' | MarketplaceType>('All');
@@ -185,17 +208,6 @@ export function MezoneWorkspace({
   const [lastSubmittedWhatsAppUrl, setLastSubmittedWhatsAppUrl] = useState<string | null>(null);
   const [submittingProof, setSubmittingProof] = useState(false);
 
-  // Daily Shopping Track (0.99 PKR) Proof Form state
-  const [dailyMarketplace, setDailyMarketplace] = useState<MarketplaceType>('Temu');
-  const [dailyProductTitle, setDailyProductTitle] = useState(CURATED_PRODUCTS[0].title);
-  const [dailyProductCode, setDailyProductCode] = useState(CURATED_PRODUCTS[0].productCode);
-  const [dailyOrderRef, setDailyOrderRef] = useState('');
-  const [dailyTrackDate, setDailyTrackDate] = useState(getTodayDateKey());
-  const [dailyNotes, setDailyNotes] = useState('');
-  const [dailyAttachment, setDailyAttachment] = useState('');
-  const [dailyError, setDailyError] = useState<string | null>(null);
-  const [submittingDaily, setSubmittingDaily] = useState(false);
-
   // Personal Information state
   const [editName, setEditName] = useState(user.displayName || '');
   const [editPhoneCode, setEditPhoneCode] = useState('+92');
@@ -205,21 +217,40 @@ export function MezoneWorkspace({
   const [editBirthDate, setEditBirthDate] = useState('');
   const [editGender, setEditGender] = useState<GenderOption>('');
   const [editCountryName, setEditCountryName] = useState('Pakistan');
+  const [editAddress, setEditAddress] = useState('');
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [copiedAccountUid, setCopiedAccountUid] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  const [adminPinUnlocked, setAdminPinUnlocked] = useState(false);
+
   const isGoogleProvider = user.providerData.some((p) => p.providerId === 'google.com');
   const isProtectedAdminAccount =
     user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
   const canSeeAdminCenterOption =
-    verifyChecked &&
+    user.emailVerified &&
     isGoogleProvider &&
     isProtectedAdminAccount;
 
+  const inviteWindow = useMemo(
+    () => getAccountInviteWindow(profile?.createdAt, user.metadata?.creationTime),
+    [profile?.createdAt, user.metadata?.creationTime]
+  );
+  const rewardStatus = getRewardSystemStatus();
+  const displayWalletBalance =
+    profile?.walletBalancePkr ??
+    (isProtectedAdminAccount && user.emailVerified
+      ? ADMIN_DAILY_GRANT_PKR
+      : rewardStatus.isActive
+        ? ACCOUNT_CREATE_BONUS_PKR
+        : 0);
+
   useEffect(() => {
+    if (!canSeeAdminCenterOption) {
+      setAdminPinUnlocked(false);
+    }
     if (!canSeeAdminCenterOption && settingSection === 'admin') {
       setSettingSection('personal');
     }
@@ -253,26 +284,28 @@ export function MezoneWorkspace({
   };
 
   useEffect(() => {
-    setVerifyChecked(user.emailVerified);
+    setVerifyChecked(
+      Boolean(user.emailVerified || sessionOrigin === 'login' || profile?.mailOtpVerified)
+    );
 
-    if (user.emailVerified) {
-      const syncPersonalFields = (loaded: UserProfile) => {
-        setProfile(loaded);
-        setEditName(loaded.displayName);
-        const parsed = parseInternationalPhone(loaded.phone || '');
-        setEditPhoneCode(parsed.countryCode);
-        setEditPhoneLocal(parsed.localNumber);
-        setEditRegion(loaded.region || 'Pakistan (PKR / USD)');
-        setEditBirthDate(loaded.birthDate || '');
-        setEditGender(loaded.gender || '');
-        setEditCountryName(loaded.countryName || 'Pakistan');
-      };
+    const syncPersonalFields = (loaded: UserProfile) => {
+      setProfile(loaded);
+      setEditName(loaded.displayName);
+      const parsed = parseInternationalPhone(loaded.phone || '');
+      setEditPhoneCode(parsed.countryCode);
+      setEditPhoneLocal(parsed.localNumber);
+      setEditRegion(loaded.region || 'Pakistan (PKR / USD)');
+      setEditBirthDate(loaded.birthDate || '');
+      setEditGender(loaded.gender || '');
+      setEditCountryName(loaded.countryName || 'Pakistan');
+      setEditAddress(loaded.address || '');
+    };
 
-      void ensureUserProfile(user).then((loaded) => {
-        if (loaded) {
-          syncPersonalFields(loaded);
-        }
-      });
+    void ensureUserProfile(user, undefined, undefined, { allowUnverified: true }).then((loaded) => {
+      if (loaded) {
+        syncPersonalFields(loaded);
+      }
+    });
 
       const userRef = doc(db, 'users', user.uid);
       const unsubUser = onSnapshot(
@@ -378,30 +411,6 @@ export function MezoneWorkspace({
         }
       );
 
-      // My daily shopping tracks (0.99 PKR per approved track)
-      const myDailyQuery = query(
-        collection(db, 'dailyShoppingTracks'),
-        where('userId', '==', user.uid)
-      );
-      const unsubMyDaily = onSnapshot(
-        myDailyQuery,
-        (snap) => {
-          const rows = snap.docs.map((d) => ({
-            id: d.id,
-            ...(d.data() as Omit<DailyShoppingTrackRecord, 'id'>),
-          }));
-          rows.sort((a, b) => {
-            const ta = (a.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
-            const tb = (b.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
-            return tb - ta;
-          });
-          setMyDailyTracks(rows);
-        },
-        (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'dailyShoppingTracks');
-        }
-      );
-
       // My withdrawal requests
       const myWithdrawalsQuery = query(
         collection(db, 'withdrawals'),
@@ -451,6 +460,7 @@ export function MezoneWorkspace({
       );
 
       const isAdminAccount =
+        user.emailVerified &&
         user.providerData.some((p) => p.providerId === 'google.com') &&
         user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
 
@@ -474,6 +484,21 @@ export function MezoneWorkspace({
         },
         (error) => {
           handleFirestoreError(error, OperationType.LIST, 'products');
+        }
+      );
+
+      const unsubCurated = onSnapshot(
+        query(collection(db, 'curatedCatalog')),
+        (snap) => {
+          const rows = snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<CuratedCatalogOverride, 'id'>),
+            isCuratedDefault: true,
+          }));
+          setCuratedOverrides(rows);
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.LIST, 'curatedCatalog');
         }
       );
 
@@ -501,7 +526,6 @@ export function MezoneWorkspace({
       );
 
       let unsubAdminProofs = () => {};
-      let unsubAdminDailyTracks = () => {};
       let unsubAdminReferrals = () => {};
       let unsubAdminWithdrawals = () => {};
       let unsubAdminTickets = () => {};
@@ -586,26 +610,6 @@ export function MezoneWorkspace({
             handleFirestoreError(error, OperationType.LIST, 'supportTickets');
           }
         );
-
-        const allDailyQuery = query(collection(db, 'dailyShoppingTracks'));
-        unsubAdminDailyTracks = onSnapshot(
-          allDailyQuery,
-          (snap) => {
-            const rows = snap.docs.map((d) => ({
-              id: d.id,
-              ...(d.data() as Omit<DailyShoppingTrackRecord, 'id'>),
-            }));
-            rows.sort((a, b) => {
-              const ta = (a.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
-              const tb = (b.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
-              return tb - ta;
-            });
-            setAdminDailyTracks(rows);
-          },
-          (error) => {
-            handleFirestoreError(error, OperationType.LIST, 'dailyShoppingTracks');
-          }
-        );
       }
 
       return () => {
@@ -614,43 +618,39 @@ export function MezoneWorkspace({
         unsubInvited();
         unsubMyRef();
         unsubMyProofs();
-        unsubMyDaily();
         unsubMyWithdrawals();
         unsubMyTickets();
         unsubProducts();
+        unsubCurated();
         unsubFeedback();
         unsubAdminProofs();
-        unsubAdminDailyTracks();
         unsubAdminReferrals();
         unsubAdminWithdrawals();
         unsubAdminTickets();
       };
-    } else {
-      const productsQuery = query(
-        collection(db, 'products'),
-        where('published', '==', true)
-      );
-      const unsubProducts = onSnapshot(
-        productsQuery,
-        (snap) => {
-          const rows = snap.docs.map((d) => ({
-            id: d.id,
-            ...(d.data() as Omit<AffiliateProduct, 'id'>),
-          }));
-          setPublishedProducts(rows);
-        },
-        (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'products');
-        }
-      );
-      return () => unsubProducts();
-    }
-  }, [user, verifyChecked]);
+  }, [user, sessionOrigin]);
 
   const allStorefrontProducts = useMemo(() => {
     const visibleAdminProducts = publishedProducts.filter((p) => p.published);
-    return [...visibleAdminProducts, ...CURATED_PRODUCTS];
-  }, [publishedProducts]);
+    const curatedMap = new Map(curatedOverrides.map((c) => [c.id, c]));
+    const visibleCuratedProducts = CURATED_PRODUCTS.reduce<AffiliateProduct[]>(
+      (acc, starter) => {
+        const override = curatedMap.get(starter.id);
+        if (override?.deleted) {
+          return acc;
+        }
+        const merged: AffiliateProduct = override
+          ? { ...starter, ...override, id: starter.id, isCuratedDefault: true }
+          : starter;
+        if (merged.published) {
+          acc.push(merged);
+        }
+        return acc;
+      },
+      []
+    );
+    return [...visibleAdminProducts, ...visibleCuratedProducts];
+  }, [publishedProducts, curatedOverrides]);
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -675,18 +675,7 @@ export function MezoneWorkspace({
     [likedItems]
   );
 
-  const acceptedReferralsCount = useMemo(
-    () => myInvitedReferrals.filter((r) => r.status === 'accepted').length,
-    [myInvitedReferrals]
-  );
-
-  const totalReferralRewardPkr = acceptedReferralsCount * 500;
-
   const handleToggleLike = async (product: AffiliateProduct) => {
-    if (!verifyChecked) {
-      flashStatus('Please verify your email to save products to My Liked.');
-      return;
-    }
     const isLiked = likedProductIds.has(product.id);
     await toggleLikedProduct({
       uid: user.uid,
@@ -695,15 +684,15 @@ export function MezoneWorkspace({
     });
     flashStatus(
       isLiked
-        ? `Removed "${product.title}" from My Liked.`
-        : `Saved "${product.title}" to My Liked.`
+        ? `Removed "${product.title}" from My History.`
+        : `Saved "${product.title}" to My History.`
     );
   };
 
   const handleLinkManualInvite = async (e: FormEvent) => {
     e.preventDefault();
-    if (!verifyChecked) {
-      flashStatus('Please verify your email first.');
+    if (!inviteWindow.allowed) {
+      flashStatus('Invite code cannot be verified after 24 hours of account creation.');
       return;
     }
     setLinkingInvite(true);
@@ -713,6 +702,8 @@ export function MezoneWorkspace({
         inviteeName: profile?.displayName || user.displayName || 'Mezone Shopper',
         inviteeEmail: profile?.email || user.email || '',
         inviterCodeRaw: manualInviteCode,
+        accountCreatedAt: profile?.createdAt,
+        authCreationTime: user.metadata?.creationTime,
       });
       flashStatus(res.message);
       if (res.ok) setManualInviteCode('');
@@ -738,10 +729,6 @@ export function MezoneWorkspace({
   const handleSubmitOrderProof = async (e: FormEvent) => {
     e.preventDefault();
     setProofError(null);
-    if (!verifyChecked) {
-      flashStatus('Verify your email first to submit order proofs.');
-      return;
-    }
     if (!proofOrderRef.trim() || !proofProductTitle.trim() || !proofNotes.trim()) {
       setProofError('Please complete Order ID, Product Purchased, and Order Confirmation Details.');
       flashStatus('Please complete Order ID, Product Title, and Proof Details.');
@@ -795,83 +782,9 @@ export function MezoneWorkspace({
     }
   };
 
-  const handleDailyScreenshotFile = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const compressed = await compressImageToDataUrl(file);
-      setDailyAttachment(compressed);
-      setDailyError(null);
-      flashStatus('Daily shopping proof screenshot attached.');
-    } catch {
-      setDailyError('Could not process that image. Please choose a valid JPG or PNG.');
-    }
-  };
-
-  const handleSubmitDailyTrack = async (e: FormEvent) => {
-    e.preventDefault();
-    setDailyError(null);
-    if (!verifyChecked) {
-      flashStatus('Verify your email first to submit Daily Shopping Track proofs.');
-      return;
-    }
-    if (!dailyProductTitle.trim() || !dailyOrderRef.trim() || !dailyNotes.trim()) {
-      setDailyError('Fill Product Name, Order ID, and Proof Details.');
-      return;
-    }
-    if (!dailyAttachment || dailyAttachment.trim().length < 20) {
-      setDailyError('Order screenshot proof is required to earn 0.99 PKR.');
-      return;
-    }
-
-    setSubmittingDaily(true);
-    try {
-      await submitDailyShoppingTrack({
-        uid: user.uid,
-        userName: profile?.displayName || user.displayName || 'Mezone Shopper',
-        userEmail: user.email || '',
-        marketplace: dailyMarketplace,
-        productTitle: dailyProductTitle,
-        productCode: dailyProductCode,
-        orderReference: dailyOrderRef,
-        trackDate: dailyTrackDate,
-        proofNotes: dailyNotes,
-        proofAttachment: dailyAttachment,
-      });
-      setDailyOrderRef('');
-      setDailyNotes('');
-      setDailyAttachment('');
-      flashStatus(
-        `Daily Shopping Track submitted! +${DAILY_SHOPPING_REWARD_PKR.toFixed(2)} PKR will be added after Admin approval.`
-      );
-    } finally {
-      setSubmittingDaily(false);
-    }
-  };
-
-  const handleStartDailyTrackFromProduct = (product: AffiliateProduct) => {
-    if (!verifyChecked) {
-      setActiveTab('verification');
-      flashStatus('Mail verification is required for new accounts before shopping & tracking.');
-      return;
-    }
-    setDailyMarketplace(product.marketplace);
-    setDailyProductTitle(product.title);
-    setDailyProductCode(product.productCode || product.id);
-    setDailyTrackDate(getTodayDateKey());
-    setSelectedProduct(null);
-    setActiveTab('referral');
-    setReferralSubTab('daily');
-    flashStatus(`Loaded "${product.title}" into Daily Shopping Track (0.99 PKR).`);
-  };
-
   const handleSavePersonalInfo = async (e: FormEvent) => {
     e.preventDefault();
     setPhoneInputError(null);
-    if (!verifyChecked) {
-      flashStatus('Verify your email first to save personal information.');
-      return;
-    }
 
     const phoneResult = normalizeInternationalPhone(editPhoneCode, editPhoneLocal);
     if (!phoneResult.ok) {
@@ -889,6 +802,7 @@ export function MezoneWorkspace({
         birthDate: editBirthDate,
         gender: editGender,
         countryName: editCountryName,
+        address: editAddress,
       });
       if (phoneResult.formatted.length >= 7 && !profile?.profileBonusClaimed) {
         flashStatus('Personal information saved! You can now claim +50 PKR in Wallet & Withdraw.');
@@ -938,6 +852,8 @@ export function MezoneWorkspace({
             await reauthenticateWithPopup(user, appleProvider);
           } else if (providerId.includes('facebook')) {
             await reauthenticateWithPopup(user, facebookProvider);
+          } else if (providerId.includes('github')) {
+            await reauthenticateWithPopup(user, githubProvider);
           } else if (providerId.includes('yahoo')) {
             await reauthenticateWithPopup(user, yahooProvider);
           } else if (deletePassword && user.email) {
@@ -968,42 +884,66 @@ export function MezoneWorkspace({
   };
 
   const handleLogout = async () => {
+    setAdminPinUnlocked(false);
     await signOut(auth);
     onSignedOut();
   };
 
   const handleRefreshVerification = async () => {
     await user.reload();
-    if (auth.currentUser?.emailVerified) {
-      setVerifyChecked(true);
-      await ensureUserProfile(auth.currentUser);
-      flashStatus('Email verified. Profile and Referral Program synced.');
+    setAuthRefreshTick((tick) => tick + 1);
+    const verifiedNow = Boolean(auth.currentUser?.emailVerified || profile?.mailOtpVerified);
+    setVerifyChecked(verifiedNow);
+    await ensureUserProfile(auth.currentUser || user, undefined, undefined, {
+      allowUnverified: true,
+    });
+    if (verifiedNow) {
+      flashStatus('Mail Verify synced with Green Tick.');
     } else {
-      flashStatus('Email still pending verification. Please check your inbox.');
+      flashStatus('Account active. Use New Account Mail Verify above to add a Green Tick.');
     }
+  };
+
+  const handleRefreshLinkedLogins = async () => {
+    await user.reload();
+    setVerifyChecked(Boolean(auth.currentUser?.emailVerified || profile?.mailOtpVerified));
+    setAuthRefreshTick((tick) => tick + 1);
+    await ensureUserProfile(auth.currentUser || user, undefined, undefined, {
+      allowUnverified: true,
+    });
   };
 
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#111113] flex flex-col">
-      {/* Three-Zone Top Bar Contract */}
+      {/* Three-Zone Top Bar Contract + 3-Line Main Menu Trigger */}
       <header className="border-b border-black/10 bg-[#FAF9F6]/95 backdrop-blur-sm sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4 lg:gap-6">
-          <button
-            type="button"
-            onClick={() => setActiveTab('product')}
-            className="font-display text-xl font-bold tracking-tight text-[#111113] whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Mezone
-          </button>
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open Main Menu"
+              className="p-2 -ml-1 rounded-lg border border-black/10 bg-white text-[#111113] hover:bg-[#EFECE5] transition-colors cursor-pointer"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('product')}
+              className="font-display text-xl font-bold tracking-tight text-[#111113] whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Mezone
+            </button>
+          </div>
 
-          <nav className="flex items-center gap-4 lg:gap-5 text-[13px] font-medium overflow-x-auto">
+          <nav className="hidden lg:flex items-center gap-4 lg:gap-5 text-[13px] font-medium overflow-x-auto">
             {(
               [
                 ['product', 'Product'],
-                ['liked', 'My Liked'],
-                ['referral', 'Referral Program'],
-                ['verification', 'Verification Center'],
-                ['helpcenter', 'Helpcenter'],
+                ['history', 'My History'],
+                ['referral', 'Reference Program'],
+                ['wallet', 'Wallet'],
+                ['helpcenter', 'Help Center'],
                 ['policy', 'Law & Policy'],
                 ['setting', 'Setting'],
               ] as const
@@ -1027,28 +967,254 @@ export function MezoneWorkspace({
             <ThemeToggleButton compact />
             <button
               type="button"
-              onClick={() => {
-                setActiveTab('setting');
-                setSettingSection('wallet');
-              }}
-              className="hidden md:inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold bg-[#111113] text-white rounded-lg hover:bg-[#27272A] transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums"
+              onClick={() => setActiveTab('wallet')}
+              className="inline-flex items-center gap-2 px-3 sm:px-3.5 py-2 text-xs font-semibold bg-[#111113] text-white rounded-lg hover:bg-[#27272A] transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums"
             >
               <Wallet className="w-3.5 h-3.5" />
               <span>
-                Wallet · {(profile?.walletBalancePkr ?? ACCOUNT_CREATE_BONUS_PKR).toLocaleString()} PKR
+                Wallet · {displayWalletBalance.toLocaleString()} PKR
               </span>
             </button>
           </div>
         </div>
       </header>
 
+      {/* Main Menu Sidebar (3-Line Drawer) */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 backdrop-blur-[2px] flex"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <aside
+            className="w-80 max-w-[85vw] bg-white border-r border-black/10 h-full flex flex-col justify-between overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <div className="h-16 px-5 border-b border-black/10 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="font-display text-lg font-bold text-[#111113]">
+                    Mezone
+                  </span>
+                  <span className="text-[11px] font-medium text-[#57534E]">
+                    Main Menu
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen(false)}
+                  aria-label="Close Main Menu"
+                  className="p-1.5 rounded-lg text-[#57534E] hover:text-[#111113] hover:bg-[#FAF9F6] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 border-b border-black/10 bg-[#FAF9F6]">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-full overflow-hidden bg-[#EFECE5] border border-black/10 shrink-0 flex items-center justify-center">
+                    {profile?.photoUrl || user.photoURL ? (
+                      <img
+                        src={profile?.photoUrl || user.photoURL || ''}
+                        alt={profile?.displayName || user.displayName || 'User'}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span className="font-display text-sm font-bold text-[#111113]">
+                        {(profile?.displayName || user.displayName || user.email || 'MZ')
+                          .trim()
+                          .slice(0, 2)
+                          .toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-[#111113] truncate">
+                      {profile?.displayName || user.displayName || 'Mezone Shopper'}
+                    </p>
+                    <p className="text-[11px] text-[#57534E] truncate">{user.email}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('verification');
+                        setSidebarOpen(false);
+                      }}
+                      className={`mt-1 text-[11px] font-semibold hover:underline cursor-pointer ${
+                        verifyChecked ? 'text-emerald-700' : 'text-[#C2410C]'
+                      }`}
+                    >
+                      {verifyChecked ? 'Verified Account' : 'Verify Mail Required →'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <nav className="p-3 space-y-1">
+                {(
+                  [
+                    {
+                      key: 'product' as const,
+                      label: 'Product',
+                      icon: ShoppingBag,
+                      meta: `${filteredProducts.length}`,
+                    },
+                    {
+                      key: 'history' as const,
+                      label: 'My History',
+                      icon: History,
+                      meta: `${
+                        myOrderProofs.length +
+                        likedItems.length +
+                        myWithdrawals.length
+                      }`,
+                    },
+                    {
+                      key: 'referral' as const,
+                      label: 'Reference Program',
+                      icon: Users,
+                      meta: `${myInvitedReferrals.length}`,
+                    },
+                    {
+                      key: 'wallet' as const,
+                      label: 'Wallet',
+                      icon: Wallet,
+                      meta: `${displayWalletBalance.toLocaleString()} PKR`,
+                      locked: false,
+                    },
+                    {
+                      key: 'chat' as const,
+                      label: 'Chat',
+                      icon: MessageCircle,
+                      meta: 'Coming Soon',
+                      locked: true,
+                    },
+                    {
+                      key: 'helpcenter' as const,
+                      label: 'Help Center',
+                      icon: LifeBuoy,
+                      meta: '',
+                      locked: false,
+                    },
+                    {
+                      key: 'policy' as const,
+                      label: 'Law & Policy',
+                      icon: BookOpen,
+                      meta: '',
+                      locked: false,
+                    },
+                    {
+                      key: 'setting' as const,
+                      label: 'Setting',
+                      icon: Settings,
+                      meta: '',
+                      locked: false,
+                    },
+                  ]
+                ).map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.key;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(item.key);
+                        setSidebarOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                        isActive
+                          ? 'bg-[#FFF7ED] text-[#9A3412] font-semibold border border-[#EA580C]/25'
+                          : 'text-[#111113] hover:bg-[#FAF9F6]'
+                      }`}
+                    >
+                      <span className="flex items-center gap-3">
+                        <Icon
+                          className={`w-4 h-4 shrink-0 ${
+                            isActive ? 'text-[#EA580C]' : 'text-[#57534E]'
+                          }`}
+                        />
+                        <span>{item.label}</span>
+                      </span>
+                      {item.locked ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#EFECE5] border border-black/10 text-[10px] font-semibold text-[#57534E]">
+                          <Lock className="w-3 h-3 text-[#C2410C]" />
+                          <span>{item.meta}</span>
+                        </span>
+                      ) : item.meta ? (
+                        <span className="text-[11px] font-mono text-[#57534E] tabular-nums">
+                          {item.meta}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
+
+            <div className="p-3 border-t border-black/10 space-y-1.5 bg-[#FAF9F6]">
+              {canSeeAdminCenterOption && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('setting');
+                    setSettingSection('admin');
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    activeTab === 'setting' && settingSection === 'admin'
+                      ? 'bg-[#EA580C] text-white'
+                      : 'bg-[#FFF7ED] border border-[#EA580C]/30 text-[#9A3412] hover:bg-[#FFEDD5]'
+                  }`}
+                >
+                  <span className="flex items-center gap-3">
+                    <Lock className="w-4 h-4 shrink-0" />
+                    <span>Admin Center</span>
+                  </span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider">
+                    Admin Open
+                  </span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('verification');
+                  setSidebarOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                  activeTab === 'verification'
+                    ? 'bg-[#111113] text-white'
+                    : 'bg-white border border-black/10 text-[#111113] hover:bg-[#EFECE5]'
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4 text-[#EA580C] shrink-0" />
+                <span>Verification Center</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSidebarOpen(false);
+                  void handleLogout();
+                }}
+                className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-xs font-semibold text-[#9A3412] hover:bg-[#FFF7ED] transition-colors cursor-pointer"
+              >
+                <LogOut className="w-4 h-4 shrink-0" />
+                <span>Logout</span>
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {!verifyChecked && (
         <div className="border-b border-[#EA580C]/30 bg-[#FFF7ED]">
           <div className="max-w-7xl mx-auto px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#9A3412]">
             <p>
-              <strong>Mail verification required for new accounts:</strong> Verify your inbox for{' '}
-              <strong>{user.email}</strong> to buy products (Shop Now), access My Liked, link
-              invite codes, and submit Daily Shopping / Order Proofs.
+              <strong>Mail Verify for new accounts:</strong> Complete Mail Verify for{' '}
+              <strong>{user.email}</strong> in Verification Center (or via inbox link). Login
+              Accounts do not need Mail Verification.
             </p>
             <div className="flex items-center gap-3 shrink-0">
               <button
@@ -1110,16 +1276,6 @@ export function MezoneWorkspace({
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('referral');
-                    setReferralSubTab('daily');
-                  }}
-                  className="h-10 px-3.5 bg-[#FFF7ED] border border-[#EA580C]/35 text-[#9A3412] text-xs font-semibold rounded-lg hover:bg-[#FFEDD5] cursor-pointer whitespace-nowrap"
-                >
-                  Daily Shopping (+0.99 PKR/Track)
-                </button>
                 <div className="relative">
                   <Search className="w-4 h-4 text-[#57534E] absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
@@ -1267,41 +1423,15 @@ export function MezoneWorkspace({
                             )}
                           </div>
 
-                          {verifyChecked ? (
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleStartDailyTrackFromProduct(product)}
-                                className="px-2.5 py-2 bg-[#FAF9F6] border border-black/15 text-[#111113] text-[11px] font-semibold rounded-lg hover:bg-[#EFECE5] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                                title="Fill Daily Shopping Proof Form (+0.99 PKR)"
-                              >
-                                Track 0.99
-                              </button>
-                              <a
-                                href={product.affiliateUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap shrink-0"
-                              >
-                                <span>Shop Now</span>
-                                <ExternalLink className="w-3.5 h-3.5" />
-                              </a>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setActiveTab('verification');
-                                flashStatus(
-                                  'Mail verification is required for new accounts before buying products.'
-                                );
-                              }}
-                              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              <Lock className="w-3.5 h-3.5" />
-                              <span>Verify Mail to Buy</span>
-                            </button>
-                          )}
+                          <a
+                            href={product.affiliateUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap shrink-0"
+                          >
+                            <span>Shop Now</span>
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
                         </div>
                       </div>
                     </article>
@@ -1312,120 +1442,360 @@ export function MezoneWorkspace({
           </div>
         )}
 
-        {/* TAB 2: MY LIKED */}
-        {activeTab === 'liked' && (
+        {/* TAB 2: MY HISTORY (Orders, Saved Liked & Withdrawals) */}
+        {activeTab === 'history' && (
           <div className="space-y-6">
-            <div>
-              <p className="text-xs font-medium text-[#C2410C] mb-1">Saved Favorites</p>
-              <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#111113]">
-                My Liked Products ({likedItems.length})
-              </h1>
-            </div>
-
-            {likedItems.length === 0 ? (
-              <div className="bg-white border border-black/10 rounded-xl p-12 text-center">
-                <p className="text-sm text-[#57534E] mb-4">
-                  You have not liked any Temu or Amazon products yet.
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium text-[#C2410C] mb-1">
+                  Account Activity, Orders &amp; Saved Favorites
                 </p>
+                <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#111113]">
+                  My History
+                </h1>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('verification')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white border border-black/15 text-xs font-semibold text-[#111113] rounded-lg hover:bg-[#EFECE5] cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-[#EA580C]" />
+                  <span>Verification Center</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab('product')}
-                  className="px-4 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] cursor-pointer"
+                  className="px-3.5 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] cursor-pointer"
                 >
-                  Browse Product Catalog
+                  Browse Products
                 </button>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-7">
-                {likedItems.map((item) => (
-                  <article
-                    key={item.id}
-                    className="bg-white border border-black/10 rounded-xl overflow-hidden flex flex-col"
+            </div>
+
+            {/* Summary KPI Strip */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 border border-black/10 rounded-xl bg-white divide-y sm:divide-y-0 sm:divide-x divide-black/10">
+              <div className="p-5">
+                <p className="text-xs text-[#57534E] mb-1">Order Proofs</p>
+                <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
+                  {myOrderProofs.length}
+                </p>
+              </div>
+              <div className="p-5">
+                <p className="text-xs text-[#57534E] mb-1">Saved Liked Products</p>
+                <p className="font-mono text-2xl font-semibold text-[#C2410C] tabular-nums">
+                  {likedItems.length}
+                </p>
+              </div>
+              <div className="p-5">
+                <p className="text-xs text-[#57534E] mb-1">Withdraw Requests</p>
+                <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
+                  {myWithdrawals.length}
+                </p>
+              </div>
+            </div>
+
+            {/* Sub-filter Pills */}
+            <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-[#EFECE5] rounded-lg w-fit">
+              {(
+                [
+                  ['all', 'All Activity'],
+                  ['orders', `Order Proofs (${myOrderProofs.length})`],
+                  ['liked', `My Liked (${likedItems.length})`],
+                  ['withdrawals', `Withdraw History (${myWithdrawals.length})`],
+                ] as const
+              ).map(([subKey, label]) => (
+                <button
+                  key={subKey}
+                  type="button"
+                  onClick={() => setHistorySubTab(subKey)}
+                  className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    historySubTab === subKey
+                      ? 'bg-white text-[#111113] shadow-sm'
+                      : 'text-[#57534E] hover:text-[#111113]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* 1. Order Proof History */}
+            {(historySubTab === 'all' || historySubTab === 'orders') && (
+              <div className="bg-white border border-black/10 rounded-xl overflow-hidden">
+                <div className="px-6 py-4 border-b border-black/10 flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold text-[#111113]">
+                    Order Proof History ({myOrderProofs.length})
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('referral');
+                      setReferralSubTab('referral');
+                    }}
+                    className="text-xs font-semibold text-[#EA580C] hover:underline cursor-pointer"
                   >
-                    <div className="aspect-[4/3] w-full overflow-hidden bg-[#EFECE5]">
-                      <SafeImage
-                        src={item.imageUrl}
-                        alt={item.title}
-                        fallbackTitle={item.title}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                    <div className="p-5 flex-1 flex flex-col justify-between">
-                      <div>
-                        <div className="flex items-center gap-2 text-xs text-[#57534E] mb-2">
-                          <span className="font-semibold text-[#C2410C]">
-                            {item.marketplace}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span>{item.category}</span>
-                        </div>
-                        <h2 className="text-base font-semibold text-[#111113] leading-snug mb-3">
-                          {item.title}
-                        </h2>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 pt-3 border-t border-black/10">
-                        <span className="font-mono text-base font-semibold text-[#111113] tabular-nums">
-                          ${item.price.toFixed(2)}
-                        </span>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => removeLikedItemById(item.id)}
-                            className="px-3 py-2 text-xs font-medium bg-[#FAF9F6] border border-black/15 rounded-lg hover:bg-[#EFECE5] text-[#57534E] cursor-pointer"
+                    + Submit Order Proof
+                  </button>
+                </div>
+                {myOrderProofs.length === 0 ? (
+                  <div className="p-6 text-xs text-[#57534E]">
+                    No order proofs submitted yet.
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-black/10">
+                    {myOrderProofs.map((proof) => (
+                      <li key={proof.id} className="px-6 py-4 space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-[#111113]">
+                            {proof.productTitle}
+                          </p>
+                          <span
+                            className={`text-xs font-semibold capitalize ${
+                              proof.status === 'approved'
+                                ? 'text-emerald-700'
+                                : proof.status === 'rejected'
+                                  ? 'text-red-700'
+                                  : 'text-[#C2410C]'
+                            }`}
                           >
-                            Remove
-                          </button>
-                          {verifyChecked ? (
-                            <a
-                              href={item.affiliateUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap"
-                            >
-                              <span>Shop Now</span>
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setActiveTab('verification');
-                                flashStatus(
-                                  'Mail verification is required for new accounts before buying products.'
-                                );
-                              }}
-                              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] transition-colors whitespace-nowrap cursor-pointer"
-                            >
-                              <Lock className="w-3.5 h-3.5" />
-                              <span>Verify Mail to Buy</span>
-                            </button>
-                          )}
+                            {proof.status}
+                          </span>
                         </div>
-                      </div>
-                    </div>
-                  </article>
-                ))}
+                        <p className="text-xs text-[#57534E]">
+                          {proof.marketplace} · Order{' '}
+                          <span className="font-mono text-[#111113]">{proof.orderReference}</span> ·{' '}
+                          <span className="font-mono tabular-nums">
+                            {proof.quantity} product(s)
+                          </span>
+                        </p>
+                        {proof.adminNote && (
+                          <p className="text-xs text-[#57534E]">Admin note: {proof.adminNote}</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {/* 2. Saved / My Liked Products */}
+            {(historySubTab === 'all' || historySubTab === 'liked') && (
+              <div className="space-y-4">
+                <h2 className="text-base font-semibold text-[#111113]">
+                  Saved &amp; Liked Products ({likedItems.length})
+                </h2>
+
+                {likedItems.length === 0 ? (
+                  <div className="bg-white border border-black/10 rounded-xl p-10 text-center">
+                    <p className="text-sm text-[#57534E] mb-4">
+                      You have not liked any Temu or Amazon products yet.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('product')}
+                      className="px-4 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] cursor-pointer"
+                    >
+                      Browse Product Catalog
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-7">
+                    {likedItems.map((item) => (
+                      <article
+                        key={item.id}
+                        className="bg-white border border-black/10 rounded-xl overflow-hidden flex flex-col"
+                      >
+                        <div className="aspect-[4/3] w-full overflow-hidden bg-[#EFECE5]">
+                          <SafeImage
+                            src={item.imageUrl}
+                            alt={item.title}
+                            fallbackTitle={item.title}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="p-5 flex-1 flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center gap-2 text-xs text-[#57534E] mb-2">
+                              <span className="font-semibold text-[#C2410C]">
+                                {item.marketplace}
+                              </span>
+                              <span aria-hidden="true">·</span>
+                              <span>{item.category}</span>
+                            </div>
+                            <h3 className="text-base font-semibold text-[#111113] leading-snug mb-3">
+                              {item.title}
+                            </h3>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2 pt-3 border-t border-black/10">
+                            <span className="font-mono text-base font-semibold text-[#111113] tabular-nums">
+                              ${item.price.toFixed(2)}
+                            </span>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => removeLikedItemById(item.id)}
+                                className="px-3 py-2 text-xs font-medium bg-[#FAF9F6] border border-black/15 rounded-lg hover:bg-[#EFECE5] text-[#57534E] cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                              <a
+                                href={item.affiliateUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] transition-colors whitespace-nowrap"
+                              >
+                                <span>Shop Now</span>
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 4. Withdraw History */}
+            {(historySubTab === 'all' || historySubTab === 'withdrawals') && (
+              <div className="bg-white border border-black/10 rounded-xl overflow-hidden">
+                <div className="px-6 py-4 border-b border-black/10 flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold text-[#111113]">
+                    Withdraw History ({myWithdrawals.length})
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('wallet')}
+                    className="text-xs font-semibold text-[#EA580C] hover:underline cursor-pointer"
+                  >
+                    Open Wallet →
+                  </button>
+                </div>
+                {myWithdrawals.length === 0 ? (
+                  <div className="p-6 text-xs text-[#57534E]">
+                    No withdrawal requests submitted yet.
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-black/10">
+                    {myWithdrawals.map((wd) => (
+                      <li key={wd.id} className="px-6 py-4 space-y-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-[#111113]">
+                            {wd.bankName} · {wd.holderName}
+                          </p>
+                          <span
+                            className={`text-xs font-semibold capitalize ${
+                              wd.status === 'approved'
+                                ? 'text-emerald-700'
+                                : wd.status === 'rejected'
+                                  ? 'text-red-700'
+                                  : 'text-[#C2410C]'
+                            }`}
+                          >
+                            {wd.status}
+                          </span>
+                        </div>
+                        <p className="text-xs text-[#57534E] font-mono tabular-nums">
+                          Requested: {wd.amount} PKR · Net Payout: {wd.netAmountPkr}{' '}
+                          PKR (5% Tax + 2% Fee) · Cell: {wd.cellNumber}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
           </div>
         )}
 
-        {/* TAB 3: REFERRAL PROGRAM & REWARDS WALLET */}
+        {/* TAB 2B: DEDICATED WALLET TAB */}
+        {activeTab === 'wallet' && (
+          <div className="space-y-6">
+            <div>
+              <p className="text-xs font-medium text-[#C2410C] mb-1">
+                Mezone PKR Wallet, Daily Login Tokens &amp; Withdraw
+              </p>
+              <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#111113]">
+                My Wallet
+              </h1>
+            </div>
+            <WalletWithdrawSection
+              uid={user.uid}
+              userEmail={user.email || ''}
+              isVerified={true}
+              profile={profile}
+              myWithdrawals={myWithdrawals}
+              onFlashStatus={flashStatus}
+              onGoToPersonalInfo={() => {
+                setActiveTab('setting');
+                setSettingSection('personal');
+              }}
+            />
+          </div>
+        )}
+
+        {/* TAB 2C: LOCKED CHAT PAGE (COMING SOON) */}
+        {activeTab === 'chat' && (
+          <div className="max-w-2xl mx-auto py-8">
+            <div className="bg-white border border-black/10 rounded-xl p-8 sm:p-10 text-center space-y-6">
+              <div className="w-16 h-16 rounded-full bg-[#FFF7ED] border border-[#EA580C]/30 text-[#EA580C] flex items-center justify-center mx-auto">
+                <Lock className="w-7 h-7" />
+              </div>
+
+              <div className="space-y-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#EFECE5] border border-black/10 text-[11px] font-semibold text-[#9A3412]">
+                  <Lock className="w-3 h-3" />
+                  <span>Locked · Coming Soon</span>
+                </span>
+                <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#111113]">
+                  Mezone Chat — Coming Soon
+                </h1>
+                <p className="text-sm text-[#57534E] leading-relaxed max-w-md mx-auto">
+                  Direct community &amp; shopper messaging is currently locked while we finalize the
+                  Mezone Chat experience. In the meantime, you can reach Mezone Support in Help
+                  Center or browse curated products.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('helpcenter')}
+                  className="h-10 px-5 bg-[#111113] text-white text-xs font-semibold rounded-lg hover:bg-[#27272A] inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <LifeBuoy className="w-4 h-4" />
+                  <span>Go to Help Center</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('product')}
+                  className="h-10 px-5 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <ShoppingBag className="w-4 h-4" />
+                  <span>Browse Products</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: REFERRAL PROGRAM (INVITE PROGRAM ONLY) */}
         {activeTab === 'referral' && (
           <div className="space-y-8">
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
               <div>
                 <p className="text-xs font-medium text-[#C2410C] mb-1">
-                  Mezone Rewards, Daily Login Tokens & Referral Program
+                  Mezone Invite Program &amp; Rewards Wallet
                 </p>
                 <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#111113]">
                   {referralSubTab === 'wallet'
                     ? 'PKR Wallet, 30-Day Tokens & Withdraw'
-                    : referralSubTab === 'daily'
-                      ? 'Daily Shopping Track · +0.99 PKR / Approved Track'
-                      : 'Referral Program · 1 User = 500 PKR'}
+                    : 'Invite Program · 1 User = 500 PKR'}
                 </h1>
               </div>
 
@@ -1440,18 +1810,7 @@ export function MezoneWorkspace({
                         : 'text-[#57534E] hover:text-[#111113]'
                     }`}
                   >
-                    Referral Program
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReferralSubTab('daily')}
-                    className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      referralSubTab === 'daily'
-                        ? 'bg-white text-[#111113] shadow-sm'
-                        : 'text-[#57534E] hover:text-[#111113]'
-                    }`}
-                  >
-                    Daily Shopping (0.99 PKR)
+                    Invite Program
                   </button>
                   <button
                     type="button"
@@ -1462,11 +1821,11 @@ export function MezoneWorkspace({
                         : 'text-[#57534E] hover:text-[#111113]'
                     }`}
                   >
-                    Wallet & Withdraw ({(profile?.walletBalancePkr ?? ACCOUNT_CREATE_BONUS_PKR).toLocaleString()} PKR)
+                    Wallet & Withdraw ({displayWalletBalance.toLocaleString()} PKR)
                   </button>
                 </div>
 
-                {verifyChecked && profile?.inviteCode ? (
+                {profile?.inviteCode ? (
                   <div className="flex flex-wrap items-center gap-3 bg-white border border-black/10 rounded-lg px-4 py-2">
                     <span className="text-xs text-[#57534E]">Invite ID</span>
                     <span className="font-mono text-sm font-semibold text-[#111113]">
@@ -1501,58 +1860,35 @@ export function MezoneWorkspace({
                     <button
                       type="button"
                       onClick={async () => {
-                        const shareUrl = `${window.location.origin}/register?invite=${profile.inviteCode}`;
+                        const shareText = `Join Mezone at ${window.location.origin} and apply my Invite ID (${profile.inviteCode}) in Reference Program within 24h!`;
                         try {
-                          await navigator.clipboard.writeText(shareUrl);
+                          await navigator.clipboard.writeText(shareText);
                         } catch {
                           // ignore
                         }
-                        flashStatus(`Invite link copied (${profile.inviteCode}).`);
+                        flashStatus(`Invite share message copied (${profile.inviteCode}).`);
                       }}
                       className="text-xs font-semibold text-[#EA580C] hover:text-[#C2410C] cursor-pointer"
                     >
-                      Copy Link
+                      Copy Share
                     </button>
                   </div>
                 ) : null}
               </div>
             </div>
 
-            {!verifyChecked && (
-              <div className="bg-[#FFF7ED] border border-[#EA580C]/30 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <p className="text-sm font-semibold text-[#111113]">
-                    Verify Mail First to Show Your Invite ID
-                  </p>
-                  <p className="text-xs text-[#57534E] leading-relaxed">
-                    Your personal Mezone Invite ID is hidden until your email address (
-                    <span className="font-mono text-[#111113]">{user.email}</span>) is
-                    verified. Verify your mail first, then your Invite ID will appear here.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await sendEmailVerification(user);
-                        flashStatus(`Verification email sent to ${user.email}.`);
-                      } catch {
-                        flashStatus('Verification email sent recently. Check your inbox.');
-                      }
-                    }}
-                    className="h-9 px-3.5 bg-white border border-black/15 text-xs font-semibold text-[#111113] rounded-lg hover:bg-[#FAF9F6] cursor-pointer whitespace-nowrap"
-                  >
-                    Send Verification Mail
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRefreshVerification}
-                    className="h-9 px-4 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] cursor-pointer whitespace-nowrap"
-                  >
-                    I Have Verified
-                  </button>
-                </div>
+            {!rewardStatus.isActive && (
+              <div className="rounded-xl border border-[#EA580C]/30 bg-[#FFF7ED] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#9A3412]">
+                <span className="inline-flex items-center gap-2">
+                  <Clock className="w-4 h-4 shrink-0" />
+                  <span>
+                    <strong>Reward Expired:</strong> Referral 500 PKR reward payouts start on{' '}
+                    <strong>{REWARD_SYSTEM_START_LABEL}</strong>.
+                  </span>
+                </span>
+                <span className="font-mono font-semibold shrink-0">
+                  {rewardStatus.countdownLabel}
+                </span>
               </div>
             )}
 
@@ -1560,7 +1896,7 @@ export function MezoneWorkspace({
               <WalletWithdrawSection
                 uid={user.uid}
                 userEmail={user.email || ''}
-                isVerified={verifyChecked}
+                isVerified={true}
                 profile={profile}
                 myWithdrawals={myWithdrawals}
                 onFlashStatus={flashStatus}
@@ -1569,330 +1905,20 @@ export function MezoneWorkspace({
                   setSettingSection('personal');
                 }}
               />
-            ) : referralSubTab === 'daily' ? (
-              <div className="space-y-8">
-                <div className="grid grid-cols-2 lg:grid-cols-4 border border-black/10 rounded-xl bg-white divide-y lg:divide-y-0 lg:divide-x divide-black/10">
-                  <div className="p-6">
-                    <p className="text-xs text-[#57534E] mb-1">Daily Track Reward</p>
-                    <p className="font-mono text-2xl font-semibold text-[#C2410C] tabular-nums">
-                      0.99 PKR
-                    </p>
-                    <p className="text-xs text-[#57534E] mt-1">Per approved proof form</p>
-                  </div>
-                  <div className="p-6">
-                    <p className="text-xs text-[#57534E] mb-1">Approved Tracks</p>
-                    <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
-                      {profile?.dailyShoppingCount ??
-                        myDailyTracks.filter((d) => d.status === 'approved').length}
-                    </p>
-                    <p className="text-xs text-[#57534E] mt-1">Verified daily purchases</p>
-                  </div>
-                  <div className="p-6">
-                    <p className="text-xs text-[#57534E] mb-1">Daily Earned</p>
-                    <p className="font-mono text-2xl font-semibold text-emerald-700 tabular-nums">
-                      {(
-                        profile?.dailyShoppingEarnedPkr ??
-                        Number(
-                          (
-                            myDailyTracks.filter((d) => d.status === 'approved').length *
-                            DAILY_SHOPPING_REWARD_PKR
-                          ).toFixed(2)
-                        )
-                      ).toFixed(2)}{' '}
-                      PKR
-                    </p>
-                    <p className="text-xs text-[#57534E] mt-1">Added to PKR wallet</p>
-                  </div>
-                  <div className="p-6">
-                    <p className="text-xs text-[#57534E] mb-1">Pending Review</p>
-                    <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
-                      {myDailyTracks.filter((d) => d.status === 'pending').length}
-                    </p>
-                    <p className="text-xs text-[#57534E] mt-1">Awaiting Admin approval</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                  <div className="lg:col-span-6 bg-white border border-black/10 rounded-xl p-6 space-y-4">
-                    <div>
-                      <p className="text-xs font-medium text-[#C2410C]">
-                        Form Fill Proof Required · +0.99 PKR on Admin Approval
-                      </p>
-                      <h2 className="text-base font-semibold text-[#111113]">
-                        Submit Daily Shopping Track Proof
-                      </h2>
-                      <p className="text-xs text-[#57534E] mt-1">
-                        After shopping from Temu or Amazon using your verified Mezone account,
-                        fill this daily tracking form with your Order Screenshot to earn{' '}
-                        <strong className="text-[#111113]">0.99 PKR</strong> per approved track.
-                      </p>
-                    </div>
-
-                    {dailyError && (
-                      <div className="p-3 rounded-lg bg-[#FFF7ED] border border-[#EA580C]/40 text-xs text-[#9A3412]">
-                        {dailyError}
-                      </div>
-                    )}
-
-                    <form onSubmit={handleSubmitDailyTrack} className="space-y-3.5">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label
-                            htmlFor="daily-mkt"
-                            className="block text-xs font-medium text-[#111113] mb-1"
-                          >
-                            Store
-                          </label>
-                          <select
-                            id="daily-mkt"
-                            value={dailyMarketplace}
-                            onChange={(e) =>
-                              setDailyMarketplace(e.target.value as MarketplaceType)
-                            }
-                            className="w-full h-10 px-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg"
-                          >
-                            <option value="Temu">Temu</option>
-                            <option value="Amazon">Amazon</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label
-                            htmlFor="daily-date"
-                            className="block text-xs font-medium text-[#111113] mb-1"
-                          >
-                            Shopping Date
-                          </label>
-                          <input
-                            id="daily-date"
-                            type="date"
-                            required
-                            value={dailyTrackDate}
-                            onChange={(e) => setDailyTrackDate(e.target.value)}
-                            className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label
-                            htmlFor="daily-title"
-                            className="block text-xs font-medium text-[#111113] mb-1"
-                          >
-                            Product Name
-                          </label>
-                          <input
-                            id="daily-title"
-                            type="text"
-                            required
-                            maxLength={140}
-                            value={dailyProductTitle}
-                            onChange={(e) => setDailyProductTitle(e.target.value)}
-                            placeholder="Product bought today"
-                            className="w-full h-10 px-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg"
-                          />
-                        </div>
-
-                        <div>
-                          <label
-                            htmlFor="daily-code"
-                            className="block text-xs font-medium text-[#111113] mb-1"
-                          >
-                            Product Code
-                          </label>
-                          <input
-                            id="daily-code"
-                            type="text"
-                            maxLength={32}
-                            value={dailyProductCode}
-                            onChange={(e) => setDailyProductCode(e.target.value.toUpperCase())}
-                            placeholder="e.g. MZ-TM-101"
-                            className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="daily-order-id"
-                          className="block text-xs font-medium text-[#111113] mb-1"
-                        >
-                          Official Order ID
-                        </label>
-                        <input
-                          id="daily-order-id"
-                          type="text"
-                          required
-                          minLength={3}
-                          maxLength={64}
-                          value={dailyOrderRef}
-                          onChange={(e) => setDailyOrderRef(e.target.value)}
-                          placeholder="e.g. PO-044-9281736"
-                          className="w-full h-10 px-3 text-sm font-mono bg-[#FAF9F6] border border-black/15 rounded-lg"
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="daily-notes"
-                          className="block text-xs font-medium text-[#111113] mb-1"
-                        >
-                          Proof Details &amp; Checkout Notes
-                        </label>
-                        <textarea
-                          id="daily-notes"
-                          required
-                          rows={2}
-                          maxLength={300}
-                          value={dailyNotes}
-                          onChange={(e) => setDailyNotes(e.target.value)}
-                          placeholder="Confirm checkout time, order total, and confirmation link..."
-                          className="w-full p-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-medium text-[#111113] mb-1.5">
-                          Order Screenshot Proof{' '}
-                          <span className="text-[#EA580C]">(Required)</span>
-                        </label>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium bg-[#FAF9F6] border border-black/15 rounded-lg hover:bg-[#EFECE5] cursor-pointer">
-                            <Upload className="w-3.5 h-3.5 text-[#EA580C]" />
-                            <span>
-                              {dailyAttachment
-                                ? 'Replace Screenshot'
-                                : 'Upload Shopping Screenshot'}
-                            </span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={handleDailyScreenshotFile}
-                              className="hidden"
-                            />
-                          </label>
-                          {dailyAttachment && (
-                            <button
-                              type="button"
-                              onClick={() => setDailyAttachment('')}
-                              className="text-xs text-[#9A3412] underline underline-offset-2 cursor-pointer"
-                            >
-                              Remove
-                            </button>
-                          )}
-                        </div>
-                        {dailyAttachment && (
-                          <div className="mt-2.5 p-2 bg-[#FAF9F6] border border-black/10 rounded-lg inline-block">
-                            <img
-                              src={dailyAttachment}
-                              alt="Daily shopping proof preview"
-                              className="max-h-32 rounded object-contain"
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={submittingDaily}
-                        className="w-full h-10 px-4 bg-[#EA580C] text-white text-xs font-semibold rounded-lg hover:bg-[#C2410C] disabled:opacity-60 cursor-pointer"
-                      >
-                        {submittingDaily
-                          ? 'Submitting Daily Track...'
-                          : 'Submit Daily Track Proof (+0.99 PKR on Approval)'}
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className="lg:col-span-6 bg-white border border-black/10 rounded-xl overflow-hidden h-fit">
-                    <div className="px-6 py-4 border-b border-black/10">
-                      <h2 className="text-base font-semibold text-[#111113]">
-                        Your Daily Shopping Track History ({myDailyTracks.length})
-                      </h2>
-                    </div>
-                    {myDailyTracks.length === 0 ? (
-                      <div className="p-6 text-xs text-[#57534E]">
-                        No daily shopping tracks submitted yet. Submit your first form on the left
-                        to earn 0.99 PKR once approved!
-                      </div>
-                    ) : (
-                      <ul className="divide-y divide-black/10">
-                        {myDailyTracks.map((track) => (
-                          <li key={track.id} className="px-6 py-4 space-y-1.5">
-                            <div className="flex items-center justify-between gap-3">
-                              <p className="text-sm font-semibold text-[#111113]">
-                                {track.productTitle}{' '}
-                                <span className="font-mono text-xs text-[#57534E]">
-                                  ({track.productCode})
-                                </span>
-                              </p>
-                              <span
-                                className={`text-xs font-semibold capitalize ${
-                                  track.status === 'approved'
-                                    ? 'text-emerald-700'
-                                    : track.status === 'rejected'
-                                      ? 'text-red-700'
-                                      : 'text-[#C2410C]'
-                                }`}
-                              >
-                                {track.status === 'approved'
-                                  ? 'Approved · +0.99 PKR'
-                                  : track.status}
-                              </span>
-                            </div>
-                            <p className="text-xs text-[#57534E]">
-                              {track.marketplace} · Order{' '}
-                              <span className="font-mono text-[#111113]">
-                                {track.orderReference}
-                              </span>{' '}
-                              · Date <span className="font-mono">{track.trackDate}</span>
-                            </p>
-                            {track.adminNote && (
-                              <p className="text-xs text-[#57534E]">
-                                Admin note: {track.adminNote}
-                              </p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-              </div>
             ) : (
               <>
-            {/* 4-Column Tabular KPI Strip */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 border border-black/10 rounded-xl bg-white divide-y lg:divide-y-0 lg:divide-x divide-black/10">
-              <div className="p-6">
-                <p className="text-xs text-[#57534E] mb-1">Referral Reward</p>
-                <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
-                  500 PKR
-                </p>
-                <p className="text-xs text-[#57534E] mt-1">Per accepted referral</p>
-              </div>
-              <div className="p-6">
-                <p className="text-xs text-[#57534E] mb-1">Invited Users</p>
-                <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
-                  {myInvitedReferrals.length}
-                </p>
-                <p className="text-xs text-[#57534E] mt-1">Joined with your code</p>
-              </div>
-              <div className="p-6">
-                <p className="text-xs text-[#57534E] mb-1">Accepted Referrals</p>
-                <p className="font-mono text-2xl font-semibold text-[#111113] tabular-nums">
-                  {acceptedReferralsCount}
-                </p>
-                <p className="text-xs text-[#57534E] mt-1">10+ orders approved</p>
-              </div>
-              <div className="p-6">
-                <p className="text-xs text-[#57534E] mb-1">Total Referral Earnings</p>
-                <p className="font-mono text-2xl font-semibold text-[#C2410C] tabular-nums">
-                  {totalReferralRewardPkr.toLocaleString()} PKR
-                </p>
-                <p className="text-xs text-[#57534E] mt-1">Verified referral balance</p>
-              </div>
-            </div>
+            {/* Top Card (Earning, Yesterday earning, Weekly earning, Withdraw money) + Account Invite UID, Status, Reference Task & Analysis For Add User */}
+            <ReferenceAnalyticsSection
+              user={user}
+              verifyChecked={true}
+              profile={profile}
+              myInvitedReferrals={myInvitedReferrals}
+              myInviterRecord={myInviterRecord}
+              myWithdrawals={myWithdrawals}
+              onOpenWallet={() => setActiveTab('wallet')}
+              onGoToVerification={() => setActiveTab('verification')}
+              onFlashStatus={flashStatus}
+            />
 
             {/* Accept Referral Rule 3-Step Panel */}
             <div className="bg-white border border-black/10 rounded-xl p-6 sm:p-8">
@@ -2008,11 +2034,25 @@ export function MezoneWorkspace({
                         </span>
                       </p>
                     </div>
+                  ) : !inviteWindow.allowed ? (
+                    <div className="p-4 rounded-lg bg-[#FFF7ED] border border-[#EA580C]/30 space-y-1">
+                      <p className="text-xs font-semibold text-[#9A3412]">
+                        24-Hour Invite Code Window Expired
+                      </p>
+                      <p className="text-xs text-[#57534E] leading-relaxed">
+                        Invite codes can only be verified within 24 hours of creating a new Mezone
+                        account. This account is past the 24-hour verification window.
+                      </p>
+                    </div>
                   ) : (
                     <form onSubmit={handleLinkManualInvite} className="space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-xs text-[#57534E] leading-relaxed">
-                          Enter a User Invite Code or use Mezone Official Invite Code:
+                          Enter a User Invite Code within 24h of account creation (
+                          <span className="font-mono font-semibold text-[#111113]">
+                            {inviteWindow.hoursRemaining}h {inviteWindow.minutesRemaining}m left
+                          </span>
+                          ):
                         </p>
                         <button
                           type="button"
@@ -2400,10 +2440,9 @@ export function MezoneWorkspace({
         {activeTab === 'verification' && (
           <VerificationCenterSection
             user={user}
-            isVerified={verifyChecked}
+            isVerified={Boolean(user.emailVerified || profile?.mailOtpVerified)}
             profile={profile}
             myOrderProofs={myOrderProofs}
-            myDailyTracks={myDailyTracks}
             onRefreshVerification={handleRefreshVerification}
             onFlashStatus={flashStatus}
             onGoToPersonalInfo={() => {
@@ -2419,7 +2458,7 @@ export function MezoneWorkspace({
             uid={user.uid}
             userName={profile?.displayName || user.displayName || 'Mezone Shopper'}
             userEmail={user.email || ''}
-            isVerified={verifyChecked}
+            isVerified={true}
             profile={profile}
             myTickets={mySupportTickets}
             feedbackList={feedbackList}
@@ -2469,11 +2508,11 @@ export function MezoneWorkspace({
 
               <section className="p-6 sm:p-8 space-y-2">
                 <h2 className="text-base font-semibold text-[#111113]">
-                  03. Referral Program Rules (1 User = 500 PKR)
+                  03. Invite Program Rules (1 User = 500 PKR · 24h Window)
                 </h2>
                 <p className="text-sm text-[#57534E] leading-relaxed">
-                  A referral is accepted only when a new user creates their Mezone account
-                  using a valid User Invite Code, purchases 10 Temu or Amazon products with
+                  A referral is accepted only when a new user links a valid User Invite Code within
+                  24 hours of account creation, purchases 10 Temu or Amazon products with
                   verifiable Order Proof, and those orders are approved by Mezone Admin.
                 </p>
               </section>
@@ -2520,25 +2559,33 @@ export function MezoneWorkspace({
                   }`}
                 >
                   <UserIcon className="w-4 h-4 text-[#EA580C] shrink-0" />
-                  <span>Personal information</span>
+                  <span>Personal Information</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setSettingSection('wallet')}
-                  className={`w-full flex items-center justify-between gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors cursor-pointer text-left ${
-                    settingSection === 'wallet'
+                  onClick={() => setSettingSection('verification')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors cursor-pointer text-left ${
+                    settingSection === 'verification'
                       ? 'bg-[#FAF9F6] text-[#111113] font-semibold'
                       : 'text-[#57534E] hover:text-[#111113]'
                   }`}
                 >
-                  <span className="flex items-center gap-3">
-                    <Wallet className="w-4 h-4 text-[#EA580C] shrink-0" />
-                    <span>Wallet & Withdraw</span>
-                  </span>
-                  <span className="font-mono text-xs text-[#C2410C] tabular-nums">
-                    {(profile?.walletBalancePkr ?? ACCOUNT_CREATE_BONUS_PKR).toLocaleString()} PKR
-                  </span>
+                  <ShieldCheck className="w-4 h-4 text-[#EA580C] shrink-0" />
+                  <span>Verification Center</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSettingSection('linked')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors cursor-pointer text-left ${
+                    settingSection === 'linked'
+                      ? 'bg-[#FAF9F6] text-[#111113] font-semibold'
+                      : 'text-[#57534E] hover:text-[#111113]'
+                  }`}
+                >
+                  <Link2 className="w-4 h-4 text-[#EA580C] shrink-0" />
+                  <span>Linked Login</span>
                 </button>
 
                 {canSeeAdminCenterOption && (
@@ -2590,7 +2637,7 @@ export function MezoneWorkspace({
                 <div className="bg-white border border-black/10 rounded-xl p-6 sm:p-8 space-y-6">
                   <div className="pb-4 border-b border-black/10">
                     <h1 className="font-display text-xl font-bold text-[#111113]">
-                      Personal information
+                      Personal Information
                     </h1>
                     <p className="text-xs text-[#57534E] mt-1">
                       Manage your Mezone Auth shopper profile. Profile DP, Mail, Login Way, and
@@ -2783,6 +2830,7 @@ export function MezoneWorkspace({
                                   if (res.countryName) setEditCountryName(res.countryName);
                                   if (res.dialCode) setEditPhoneCode(res.dialCode);
                                   if (res.region) setEditRegion(res.region);
+                                  if (res.address) setEditAddress(res.address);
                                 }
                                 flashStatus(res.message);
                               } finally {
@@ -2898,13 +2946,56 @@ export function MezoneWorkspace({
                       </div>
                     </div>
 
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label
+                          htmlFor="pi-address"
+                          className="block text-xs font-medium text-[#111113]"
+                        >
+                          Address (With Location Auto-Fill)
+                        </label>
+                        <button
+                          type="button"
+                          disabled={detectingLocation}
+                          onClick={async () => {
+                            setDetectingLocation(true);
+                            try {
+                              const res = await detectUserCountryFromBrowserLocation();
+                              if (res.ok) {
+                                if (res.address) setEditAddress(res.address);
+                                if (res.countryName) setEditCountryName(res.countryName);
+                                if (res.dialCode) setEditPhoneCode(res.dialCode);
+                                if (res.region) setEditRegion(res.region);
+                              }
+                              flashStatus(res.message);
+                            } finally {
+                              setDetectingLocation(false);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#C2410C] hover:underline cursor-pointer disabled:opacity-60"
+                        >
+                          <LocateFixed className="w-3 h-3" />
+                          <span>
+                            {detectingLocation ? 'Detecting Location...' : 'Detect Address & Location'}
+                          </span>
+                        </button>
+                      </div>
+                      <textarea
+                        id="pi-address"
+                        rows={2}
+                        maxLength={240}
+                        value={editAddress}
+                        onChange={(e) => setEditAddress(e.target.value)}
+                        placeholder="House/Street, Area/Sector, City, Postal Code, Country"
+                        className="w-full p-3 text-sm bg-[#FAF9F6] border border-black/15 rounded-lg text-[#111113]"
+                      />
+                    </div>
+
                     <div className="pt-2 flex flex-wrap items-center justify-between gap-4">
                       <p className="text-xs text-[#57534E]">
                         Invite ID:{' '}
                         <span className="font-mono font-medium text-[#111113]">
-                          {verifyChecked && profile?.inviteCode
-                            ? profile.inviteCode
-                            : 'Locked until Mail Verified'}
+                          {profile?.inviteCode || 'Generating...'}
                         </span>
                       </p>
                       <button
@@ -2955,12 +3046,34 @@ export function MezoneWorkspace({
                 </div>
               )}
 
-              {/* 1B. WALLET, BONUSES, 30-DAY TOKENS & WITHDRAW */}
+              {/* 1A. VERIFICATION CENTER INSIDE SETTING */}
+              {settingSection === 'verification' && (
+                <VerificationCenterSection
+                  user={user}
+                  isVerified={Boolean(user.emailVerified || profile?.mailOtpVerified)}
+                  profile={profile}
+                  myOrderProofs={myOrderProofs}
+                  onRefreshVerification={handleRefreshVerification}
+                  onFlashStatus={flashStatus}
+                  onGoToPersonalInfo={() => setSettingSection('personal')}
+                />
+              )}
+
+              {/* 1B. LINKED LOGIN INSIDE SETTING */}
+              {settingSection === 'linked' && (
+                <LinkedLoginSection
+                  user={user}
+                  onRefreshUser={handleRefreshLinkedLogins}
+                  onFlashStatus={flashStatus}
+                />
+              )}
+
+              {/* 1C. WALLET, BONUSES, 30-DAY TOKENS & WITHDRAW */}
               {settingSection === 'wallet' && (
                 <WalletWithdrawSection
                   uid={user.uid}
                   userEmail={user.email || ''}
-                  isVerified={verifyChecked}
+                  isVerified={true}
                   profile={profile}
                   myWithdrawals={myWithdrawals}
                   onFlashStatus={flashStatus}
@@ -2973,13 +3086,16 @@ export function MezoneWorkspace({
                 <AdminCenterSection
                   user={user}
                   publishedProducts={publishedProducts}
+                  curatedOverrides={curatedOverrides}
                   adminOrderProofs={adminOrderProofs}
-                  adminDailyTracks={adminDailyTracks}
                   adminAllReferrals={adminAllReferrals}
                   adminWithdrawals={adminWithdrawals}
                   adminSupportTickets={adminSupportTickets}
                   adminFeedbackList={feedbackList}
                   categories={CATEGORIES}
+                  unlockedByPin={adminPinUnlocked}
+                  onPinUnlocked={() => setAdminPinUnlocked(true)}
+                  onLockPin={() => setAdminPinUnlocked(false)}
                   onFlashStatus={flashStatus}
                   onLogout={handleLogout}
                 />
@@ -3125,41 +3241,15 @@ export function MezoneWorkspace({
               </div>
 
               <div className="space-y-2.5 pt-4 border-t border-black/10">
-                {verifyChecked ? (
-                  <>
-                    <a
-                      href={selectedProduct.affiliateUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-11 px-4 bg-[#EA580C] text-white text-sm font-semibold rounded-lg hover:bg-[#C2410C] transition-colors inline-flex items-center justify-center gap-2"
-                    >
-                      <span>Shop Now on {selectedProduct.marketplace}</span>
-                      <ExternalLink className="w-4 h-4" />
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => handleStartDailyTrackFromProduct(selectedProduct)}
-                      className="w-full h-10 px-4 bg-[#FFF7ED] border border-[#EA580C]/35 text-xs font-semibold text-[#9A3412] rounded-lg hover:bg-[#FFEDD5] transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <span>Submit Daily Shopping Track (+0.99 PKR)</span>
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedProduct(null);
-                      setActiveTab('verification');
-                      flashStatus(
-                        'Mail verification is required for new accounts before buying products.'
-                      );
-                    }}
-                    className="w-full h-11 px-4 bg-[#111113] text-white text-sm font-semibold rounded-lg hover:bg-[#27272A] transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Lock className="w-4 h-4" />
-                    <span>Verify Mail to Buy Products</span>
-                  </button>
-                )}
+                <a
+                  href={selectedProduct.affiliateUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full h-11 px-4 bg-[#EA580C] text-white text-sm font-semibold rounded-lg hover:bg-[#C2410C] transition-colors inline-flex items-center justify-center gap-2"
+                >
+                  <span>Shop Now on {selectedProduct.marketplace}</span>
+                  <ExternalLink className="w-4 h-4" />
+                </a>
 
                 <button
                   type="button"

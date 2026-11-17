@@ -3,6 +3,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -26,6 +27,7 @@ import {
   WithdrawalRecord,
 } from '../types/mezone';
 import { db, handleFirestoreError, OperationType } from './firebase';
+import { clearLocalMailOtpVerifiedAt, getLocalMailOtpVerifiedAt } from './otpApi';
 
 const MAX_DISPLAY_NAME = 80;
 const MAX_EMAIL = 160;
@@ -33,6 +35,7 @@ const MAX_PHONE = 32;
 const MAX_REGION = 40;
 const MAX_BIRTH_DATE = 16;
 const MAX_COUNTRY_NAME = 60;
+const MAX_ADDRESS = 240;
 const MAX_TITLE = 140;
 const MAX_URL = 500;
 const MAX_DESC = 600;
@@ -56,6 +59,64 @@ export const OFFICIAL_INVITER_NAME = 'Mezone Official';
 export const PENDING_INVITE_STORAGE_KEY = 'mezone_pending_invite_code';
 export const WHATSAPP_PROOF_NUMBER = '923312558875';
 export const WHATSAPP_PROOF_DISPLAY = '+92 3312558875';
+export const INVITE_VERIFY_WINDOW_HOURS = 24;
+export const INVITE_VERIFY_WINDOW_MS = INVITE_VERIFY_WINDOW_HOURS * 60 * 60 * 1000;
+
+function extractTimestampMs(ts?: unknown, fallbackIso?: string): number | null {
+  if (ts) {
+    if (ts instanceof Date) {
+      return Number.isNaN(ts.getTime()) ? null : ts.getTime();
+    }
+    if (typeof ts === 'string') {
+      const parsed = Date.parse(ts);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    if (typeof ts === 'object') {
+      const maybe = ts as { toMillis?: () => number; seconds?: number };
+      if (typeof maybe.toMillis === 'function') {
+        return maybe.toMillis();
+      }
+      if (typeof maybe.seconds === 'number') {
+        return maybe.seconds * 1000;
+      }
+    }
+  }
+  if (fallbackIso) {
+    const parsed = Date.parse(fallbackIso);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function getAccountInviteWindow(
+  createdAt?: unknown,
+  authCreationTime?: string
+): {
+  allowed: boolean;
+  hoursRemaining: number;
+  minutesRemaining: number;
+  expiresAtIso: string;
+} {
+  const createdMs = extractTimestampMs(createdAt, authCreationTime);
+  if (!createdMs) {
+    return {
+      allowed: true,
+      hoursRemaining: INVITE_VERIFY_WINDOW_HOURS,
+      minutesRemaining: 0,
+      expiresAtIso: new Date(Date.now() + INVITE_VERIFY_WINDOW_MS).toISOString(),
+    };
+  }
+  const expiresAtMs = createdMs + INVITE_VERIFY_WINDOW_MS;
+  const remainingMs = expiresAtMs - Date.now();
+  const allowed = remainingMs > 0;
+  const totalMinutes = Math.max(0, Math.floor(remainingMs / 60000));
+  return {
+    allowed,
+    hoursRemaining: Math.floor(totalMinutes / 60),
+    minutesRemaining: totalMinutes % 60,
+    expiresAtIso: new Date(expiresAtMs).toISOString(),
+  };
+}
 
 export const COUNTRY_PHONE_OPTIONS = [
   { code: '+92', country: 'Pakistan', iso2: 'PK', region: 'Pakistan (PKR / USD)' },
@@ -117,6 +178,7 @@ export interface PendingProfileDraft {
   birthDate: string;
   gender: GenderOption;
   countryName: string;
+  address?: string;
 }
 
 export function savePendingProfileDraft(uid: string, draft: PendingProfileDraft): void {
@@ -172,6 +234,7 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
   dialCode?: string;
   region?: string;
   city?: string;
+  address?: string;
   message: string;
 }> {
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -185,7 +248,7 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
   try {
     const position = await new Promise<GeolocationPosition>((resolve, reject) => {
       navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: false,
+        enableHighAccuracy: true,
         timeout: 9000,
         maximumAge: 300000,
       });
@@ -201,13 +264,15 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
     }
     return {
       ok: false,
-      message: 'Unable to read GPS location right now. You can select your country and code manually.',
+      message: 'Unable to read GPS location right now. You can enter your address and country manually.',
     };
   }
 
   let detectedIso = '';
   let detectedCountryName = '';
   let detectedCity = '';
+  let bdcAddressParts: string[] = [];
+  let nominatimAddress = '';
 
   try {
     const resp = await fetch(
@@ -219,37 +284,85 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
         countryName?: string;
         city?: string;
         locality?: string;
+        principalSubdivision?: string;
+        postcode?: string;
       };
       detectedIso = data.countryCode || '';
       detectedCountryName = data.countryName || '';
       detectedCity = data.city || data.locality || '';
+      bdcAddressParts = [
+        data.locality || '',
+        data.city || '',
+        data.principalSubdivision || '',
+        data.postcode || '',
+        data.countryName || '',
+      ].filter((part) => part.trim().length > 0);
     }
   } catch {
     // fallback to nominatim below
   }
 
-  if (!detectedIso && !detectedCountryName) {
-    try {
-      const resp = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}`
-      );
-      if (resp.ok) {
-        const data = (await resp.json()) as {
-          address?: {
-            country_code?: string;
-            country?: string;
-            city?: string;
-            town?: string;
-          };
+  try {
+    const resp = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}&addressdetails=1`
+    );
+    if (resp.ok) {
+      const data = (await resp.json()) as {
+        display_name?: string;
+        address?: {
+          house_number?: string;
+          road?: string;
+          neighbourhood?: string;
+          suburb?: string;
+          city?: string;
+          town?: string;
+          village?: string;
+          state?: string;
+          postcode?: string;
+          country_code?: string;
+          country?: string;
         };
-        detectedIso = (data.address?.country_code || '').toUpperCase();
-        detectedCountryName = data.address?.country || '';
-        detectedCity = data.address?.city || data.address?.town || '';
+      };
+      if (!detectedIso && data.address?.country_code) {
+        detectedIso = data.address.country_code.toUpperCase();
       }
-    } catch {
-      // ignore network error
+      if (!detectedCountryName && data.address?.country) {
+        detectedCountryName = data.address.country;
+      }
+      if (!detectedCity) {
+        detectedCity = data.address?.city || data.address?.town || data.address?.village || '';
+      }
+
+      const street = [data.address?.house_number, data.address?.road]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      const parts = [
+        street,
+        data.address?.neighbourhood || data.address?.suburb || '',
+        data.address?.city || data.address?.town || data.address?.village || '',
+        data.address?.state || '',
+        data.address?.postcode || '',
+        data.address?.country || '',
+      ].filter((p) => p && p.trim().length > 0);
+
+      if (parts.length > 0) {
+        nominatimAddress = Array.from(new Set(parts)).join(', ');
+      } else if (data.display_name) {
+        nominatimAddress = data.display_name;
+      }
     }
+  } catch {
+    // ignore nominatim network error
   }
+
+  const dedupedBdcAddress = Array.from(new Set(bdcAddressParts)).join(', ');
+  const detectedAddress = sanitizeString(
+    nominatimAddress ||
+      dedupedBdcAddress ||
+      `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`,
+    MAX_ADDRESS
+  );
 
   const mapped =
     lookupCountryOption(detectedIso) ||
@@ -262,7 +375,8 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
       dialCode: mapped.dialCode,
       region: mapped.region,
       city: detectedCity,
-      message: `Detected ${detectedCity ? `${detectedCity}, ` : ''}${mapped.countryName} (${mapped.dialCode}). Country and Cell Code auto-filled.`,
+      address: detectedAddress,
+      message: `Detected ${detectedCity ? `${detectedCity}, ` : ''}${mapped.countryName} (${mapped.dialCode}). Address, Country & Cell Code auto-filled.`,
     };
   }
 
@@ -273,13 +387,15 @@ export async function detectUserCountryFromBrowserLocation(): Promise<{
       dialCode: '+1',
       region: 'United States (USD)',
       city: detectedCity,
-      message: `Detected ${detectedCountryName}. Select your preferred Cell Number country code below.`,
+      address: detectedAddress,
+      message: `Detected ${detectedCountryName}. Address auto-filled — select your Cell Number country code if needed.`,
     };
   }
 
   return {
-    ok: false,
-    message: 'Location coordinates detected, but country lookup was unavailable. Choose your country manually.',
+    ok: true,
+    address: detectedAddress,
+    message: 'Location coordinates detected and address auto-filled. Verify your country manually.',
   };
 }
 
@@ -293,6 +409,50 @@ export const DAILY_TOKENS_CLAIM_PKR = 50;
 export const WITHDRAW_MIN_PKR = 1000;
 export const WITHDRAW_TAX_RATE = 0.05;
 export const WITHDRAW_FEE_RATE = 0.02;
+export const ADMIN_DAILY_GRANT_PKR = 40000;
+export const REWARD_SYSTEM_START_LABEL = '20 November 2026';
+export const REWARD_SYSTEM_START_UTC_MS = Date.UTC(2026, 10, 20, 0, 0, 0);
+
+export function getRewardSystemStatus(nowMs = Date.now()): {
+  isActive: boolean;
+  isExpiredPreLaunch: boolean;
+  startDateLabel: string;
+  msRemaining: number;
+  daysRemaining: number;
+  hoursRemaining: number;
+  countdownLabel: string;
+} {
+  const diff = REWARD_SYSTEM_START_UTC_MS - nowMs;
+  if (diff <= 0) {
+    return {
+      isActive: true,
+      isExpiredPreLaunch: false,
+      startDateLabel: REWARD_SYSTEM_START_LABEL,
+      msRemaining: 0,
+      daysRemaining: 0,
+      hoursRemaining: 0,
+      countdownLabel: 'Active since 20 November 2026',
+    };
+  }
+  const daysRemaining = Math.floor(diff / (24 * 60 * 60 * 1000));
+  const hoursRemaining = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+  return {
+    isActive: false,
+    isExpiredPreLaunch: true,
+    startDateLabel: REWARD_SYSTEM_START_LABEL,
+    msRemaining: diff,
+    daysRemaining,
+    hoursRemaining,
+    countdownLabel: `${daysRemaining}d ${hoursRemaining}h until ${REWARD_SYSTEM_START_LABEL}`,
+  };
+}
+
+export function buildPermanentVerificationId(uid: string): string {
+  const cleaned = uid.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const head = cleaned.slice(0, 4).padEnd(4, 'X');
+  const tail = cleaned.slice(-6).padStart(6, '0');
+  return `MZ-VID-${head}-${tail}`.slice(0, 32);
+}
 
 const DEFAULT_ADMIN_PIN_SHA256 =
   'ab2bfd38a7ba6d803f4005fa3316a77fa7bab392c19971fbcd37bb29dd9c86a9';
@@ -303,6 +463,132 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+export async function verifyWalletPin(pinInput: string, storedHash?: string): Promise<boolean> {
+  if (!storedHash || !/^[a-f0-9]{64}$/.test(storedHash)) return false;
+  const cleaned = pinInput.trim();
+  if (!/^\d{4,8}$/.test(cleaned)) return false;
+  try {
+    const hashHex = await sha256Hex(cleaned);
+    return hashHex === storedHash;
+  } catch {
+    return false;
+  }
+}
+
+export async function createWalletPin(params: {
+  uid: string;
+  pin: string;
+  confirmPin: string;
+}): Promise<{ ok: boolean; message: string }> {
+  const pin = params.pin.trim();
+  const confirm = params.confirmPin.trim();
+  if (!/^\d{4,8}$/.test(pin)) {
+    return { ok: false, message: 'Wallet PIN must be 4 to 8 numeric digits.' };
+  }
+  if (pin !== confirm) {
+    return { ok: false, message: 'Wallet PIN and confirmation PIN do not match.' };
+  }
+
+  const userRef = doc(db, 'users', params.uid);
+  try {
+    const pinHash = await sha256Hex(pin);
+    await updateDoc(userRef, {
+      walletPinHash: pinHash,
+      walletPinUpdatedAt: new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    });
+    return { ok: true, message: 'Wallet PIN created and active on your wallet.' };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${params.uid}`);
+  }
+}
+
+export async function changeWalletPin(params: {
+  uid: string;
+  currentPin: string;
+  newPin: string;
+  confirmNewPin: string;
+  storedHash: string;
+}): Promise<{ ok: boolean; message: string }> {
+  const current = params.currentPin.trim();
+  const nextPin = params.newPin.trim();
+  const confirm = params.confirmNewPin.trim();
+
+  if (!/^\d{4,8}$/.test(nextPin)) {
+    return { ok: false, message: 'New Wallet PIN must be 4 to 8 numeric digits.' };
+  }
+  if (nextPin !== confirm) {
+    return { ok: false, message: 'New Wallet PIN and confirmation do not match.' };
+  }
+  if (current === nextPin) {
+    return { ok: false, message: 'New Wallet PIN must differ from your current PIN.' };
+  }
+
+  const validCurrent = await verifyWalletPin(current, params.storedHash);
+  if (!validCurrent) {
+    return { ok: false, message: 'Current Wallet PIN is incorrect.' };
+  }
+
+  const userRef = doc(db, 'users', params.uid);
+  try {
+    const pinHash = await sha256Hex(nextPin);
+    await updateDoc(userRef, {
+      walletPinHash: pinHash,
+      walletPinUpdatedAt: new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    });
+    return { ok: true, message: 'Wallet PIN updated successfully.' };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${params.uid}`);
+  }
+}
+
+const adminGrantLocks = new Set<string>();
+
+export async function ensureAdminDailyWalletCredit(
+  user: User
+): Promise<{ grantedToday: boolean; amountAdded: number; dateKey: string }> {
+  const todayKey = getTodayDateKey();
+  const emailLower = (user.email || '').toLowerCase();
+  if (!user.emailVerified || emailLower !== ADMIN_EMAIL.toLowerCase()) {
+    return { grantedToday: false, amountAdded: 0, dateKey: todayKey };
+  }
+
+  const lockKey = `${user.uid}_${todayKey}`;
+  if (adminGrantLocks.has(lockKey)) {
+    return { grantedToday: false, amountAdded: 0, dateKey: todayKey };
+  }
+  adminGrantLocks.add(lockKey);
+
+  const userRef = doc(db, 'users', user.uid);
+  try {
+    const granted = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(userRef);
+      if (!snap.exists()) return false;
+      const data = snap.data() as UserProfile;
+      if (data.lastDailyAdminGrantDate === todayKey) {
+        return false;
+      }
+      const nextBalance = Number(((data.walletBalancePkr || 0) + ADMIN_DAILY_GRANT_PKR).toFixed(2));
+      tx.update(userRef, {
+        walletBalancePkr: nextBalance,
+        lastDailyAdminGrantDate: todayKey,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    });
+    return {
+      grantedToday: granted,
+      amountAdded: granted ? ADMIN_DAILY_GRANT_PKR : 0,
+      dateKey: todayKey,
+    };
+  } catch {
+    return { grantedToday: false, amountAdded: 0, dateKey: todayKey };
+  } finally {
+    adminGrantLocks.delete(lockKey);
+  }
 }
 
 export async function verifyAdminConfirmPin(pinInput: string): Promise<boolean> {
@@ -470,6 +756,7 @@ export function detectProvider(user: User): AuthProviderType {
   if (providerId.includes('google')) return 'google';
   if (providerId.includes('apple')) return 'apple';
   if (providerId.includes('facebook')) return 'facebook';
+  if (providerId.includes('github')) return 'github';
   if (providerId.includes('yahoo')) return 'yahoo';
   return 'email';
 }
@@ -479,6 +766,7 @@ export function formatLoginWayLabel(user: User): string {
     if (p.providerId.includes('google')) return 'Google Sign-In';
     if (p.providerId.includes('apple')) return 'Apple Sign-In';
     if (p.providerId.includes('facebook')) return 'Facebook Login';
+    if (p.providerId.includes('github')) return 'GitHub Login';
     if (p.providerId.includes('yahoo')) return 'Yahoo Login';
     if (p.providerId === 'password') return 'Email & Password';
     return p.providerId;
@@ -675,14 +963,28 @@ export async function linkUserToInviteCode(params: {
   inviteeName: string;
   inviteeEmail: string;
   inviterCodeRaw: string;
+  accountCreatedAt?: unknown;
+  authCreationTime?: string;
 }): Promise<{ ok: boolean; inviterName?: string; message: string }> {
   const code = sanitizeInviteCode(params.inviterCodeRaw);
   if (code.length < 4) {
     return { ok: false, message: 'Invite code must be at least 4 characters.' };
   }
 
+  const userRef = doc(db, 'users', params.inviteeUid);
   const codeRef = doc(db, 'inviteCodes', code);
   try {
+    const userSnap = await getDoc(userRef);
+    const createdAtFromDoc = userSnap.exists() ? userSnap.data()?.createdAt : params.accountCreatedAt;
+    const windowCheck = getAccountInviteWindow(createdAtFromDoc, params.authCreationTime);
+    if (!windowCheck.allowed) {
+      setPendingInviteCode('');
+      return {
+        ok: false,
+        message: 'Invite code cannot be verified after 24 hours of account creation.',
+      };
+    }
+
     const codeSnap = await getDoc(codeRef);
     let inviterUid = '';
     let inviterName = '';
@@ -731,8 +1033,6 @@ export async function linkUserToInviteCode(params: {
       updatedAt: serverTimestamp(),
     });
 
-    const userRef = doc(db, 'users', params.inviteeUid);
-    const userSnap = await getDoc(userRef);
     if (userSnap.exists() && !userSnap.data().invitedByCode) {
       await updateDoc(userRef, {
         invitedByCode: code,
@@ -754,9 +1054,11 @@ export async function linkUserToInviteCode(params: {
 export async function ensureUserProfile(
   user: User,
   preferredName?: string,
-  explicitInviteCode?: string
+  explicitInviteCode?: string,
+  options?: { allowUnverified?: boolean }
 ): Promise<UserProfile | null> {
-  if (!user.emailVerified) {
+  const allowUnverified = options?.allowUnverified ?? true;
+  if (!allowUnverified && !user.emailVerified) {
     return null;
   }
 
@@ -766,11 +1068,16 @@ export async function ensureUserProfile(
     const pendingCode = sanitizeInviteCode(explicitInviteCode || getPendingInviteCode());
 
       if (snap.exists()) {
-      const existingData = snap.data() as UserProfile;
+      const rewardStatus = getRewardSystemStatus();
+      const permanentVerificationId =
+        existingData.verificationId || buildPermanentVerificationId(user.uid);
       let resolvedInviteCode = existingData.inviteCode;
       const needsWalletBackfill = typeof existingData.walletBalancePkr !== 'number';
       const verifiedTokenEmail = user.email ? sanitizeString(user.email, MAX_EMAIL) : '';
       const authPhotoUrl = user.photoURL ? sanitizeString(user.photoURL, MAX_URL) : '';
+      const isVerifiedAdminAccount =
+        Boolean(user.emailVerified) &&
+        (verifiedTokenEmail || existingData.email || '').toLowerCase() === ADMIN_EMAIL.toLowerCase();
 
       if (verifiedTokenEmail && existingData.email !== verifiedTokenEmail) {
         await updateDoc(userRef, {
@@ -786,6 +1093,23 @@ export async function ensureUserProfile(
         });
       }
 
+      const pendingOtpAt = getLocalMailOtpVerifiedAt(user.uid);
+      if (!existingData.mailOtpVerified && pendingOtpAt) {
+        await updateDoc(userRef, {
+          mailOtpVerified: true,
+          mailOtpVerifiedAt: sanitizeString(pendingOtpAt, 40),
+          updatedAt: serverTimestamp(),
+        });
+        clearLocalMailOtpVerifiedAt(user.uid);
+      }
+
+      if (!existingData.verificationId && resolvedInviteCode && !needsWalletBackfill) {
+        await updateDoc(userRef, {
+          verificationId: permanentVerificationId,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
       if (!resolvedInviteCode || needsWalletBackfill) {
         resolvedInviteCode =
           resolvedInviteCode ||
@@ -794,11 +1118,12 @@ export async function ensureUserProfile(
         const backfillPayload: Record<string, unknown> = {
           inviteCode: resolvedInviteCode,
           invitedByCode: existingData.invitedByCode || '',
+          verificationId: permanentVerificationId,
           updatedAt: serverTimestamp(),
         };
         if (needsWalletBackfill) {
-          backfillPayload.walletBalancePkr = ACCOUNT_CREATE_BONUS_PKR;
-          backfillPayload.accountBonusClaimed = true;
+          backfillPayload.walletBalancePkr = rewardStatus.isActive ? ACCOUNT_CREATE_BONUS_PKR : 0;
+          backfillPayload.accountBonusClaimed = rewardStatus.isActive;
           backfillPayload.profileBonusClaimed = false;
           backfillPayload.buyTwoBonusClaimed = false;
           backfillPayload.approvedProductsCount = 0;
@@ -822,27 +1147,54 @@ export async function ensureUserProfile(
           existingData.displayName || OFFICIAL_INVITER_NAME
         );
       }
+      let latestWalletBalance = needsWalletBackfill
+        ? rewardStatus.isActive
+          ? ACCOUNT_CREATE_BONUS_PKR
+          : 0
+        : existingData.walletBalancePkr;
+      let latestAdminGrantDate = existingData.lastDailyAdminGrantDate || '';
+
+      if (isVerifiedAdminAccount) {
+        const grantRes = await ensureAdminDailyWalletCredit(user);
+        if (grantRes.grantedToday) {
+          latestWalletBalance = Number((latestWalletBalance + grantRes.amountAdded).toFixed(2));
+          latestAdminGrantDate = grantRes.dateKey;
+        }
+      }
+
       if (pendingCode && !existingData.invitedByCode) {
-        await linkUserToInviteCode({
-          inviteeUid: user.uid,
-          inviteeName: existingData.displayName,
-          inviteeEmail: verifiedTokenEmail || existingData.email || '',
-          inviterCodeRaw: pendingCode,
-        });
+        const windowCheck = getAccountInviteWindow(
+          existingData.createdAt,
+          user.metadata?.creationTime
+        );
+        if (windowCheck.allowed) {
+          await linkUserToInviteCode({
+            inviteeUid: user.uid,
+            inviteeName: existingData.displayName,
+            inviteeEmail: verifiedTokenEmail || existingData.email || '',
+            inviterCodeRaw: pendingCode,
+            accountCreatedAt: existingData.createdAt,
+            authCreationTime: user.metadata?.creationTime,
+          });
+        } else {
+          setPendingInviteCode('');
+        }
       }
       return {
         ...existingData,
         email: verifiedTokenEmail || existingData.email,
         photoUrl: authPhotoUrl,
+        verificationId: permanentVerificationId,
         birthDate: existingData.birthDate || '',
         gender: existingData.gender || '',
         countryName: existingData.countryName || '',
+        address: existingData.address || '',
         inviteCode: resolvedInviteCode,
         invitedByCode: existingData.invitedByCode || '',
-        walletBalancePkr: needsWalletBackfill
-          ? ACCOUNT_CREATE_BONUS_PKR
-          : existingData.walletBalancePkr,
-        accountBonusClaimed: needsWalletBackfill ? true : existingData.accountBonusClaimed,
+        walletBalancePkr: latestWalletBalance,
+        accountBonusClaimed: needsWalletBackfill
+          ? rewardStatus.isActive
+          : existingData.accountBonusClaimed,
         profileBonusClaimed: needsWalletBackfill ? false : existingData.profileBonusClaimed,
         buyTwoBonusClaimed: needsWalletBackfill ? false : existingData.buyTwoBonusClaimed,
         approvedProductsCount: needsWalletBackfill ? 0 : existingData.approvedProductsCount,
@@ -852,10 +1204,16 @@ export async function ensureUserProfile(
         totalWithdrawnPkr: needsWalletBackfill ? 0 : existingData.totalWithdrawnPkr,
         dailyShoppingCount: existingData.dailyShoppingCount ?? 0,
         dailyShoppingEarnedPkr: existingData.dailyShoppingEarnedPkr ?? 0,
+        mailOtpVerified: Boolean(existingData.mailOtpVerified || pendingOtpAt),
+        mailOtpVerifiedAt:
+          existingData.mailOtpVerifiedAt || (pendingOtpAt ? sanitizeString(pendingOtpAt, 40) : ''),
+        lastDailyAdminGrantDate: latestAdminGrantDate,
       };
     }
 
+    const rewardStatus = getRewardSystemStatus();
     const pendingDraft = getPendingProfileDraft(user.uid);
+    const pendingOtpAt = getLocalMailOtpVerifiedAt(user.uid);
     const displayName = sanitizeString(
       pendingDraft?.displayName ||
         preferredName ||
@@ -867,14 +1225,17 @@ export async function ensureUserProfile(
     const email = sanitizeString(user.email || `${user.uid}@mezone.app`, MAX_EMAIL);
     const provider = detectProvider(user);
     const isAdminUser = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+    const isVerifiedAdminUser = isAdminUser && Boolean(user.emailVerified);
     const inviteCode = isAdminUser
       ? OFFICIAL_INVITE_CODE
       : generateInviteCode(user.uid, displayName);
+    const verificationId = buildPermanentVerificationId(user.uid);
     const photoUrl = user.photoURL ? sanitizeString(user.photoURL, MAX_URL) : '';
     const draftPhone =
       pendingDraft?.phone && /^\+[1-9][0-9]{6,15}$/.test(pendingDraft.phone)
         ? sanitizeString(pendingDraft.phone, MAX_PHONE)
         : '';
+    const todayKey = getTodayDateKey();
 
     const newProfile = {
       uid: user.uid,
@@ -885,12 +1246,18 @@ export async function ensureUserProfile(
       provider,
       inviteCode,
       invitedByCode: '',
+      verificationId,
       photoUrl,
       birthDate: sanitizeString(pendingDraft?.birthDate || '', MAX_BIRTH_DATE),
       gender: (pendingDraft?.gender || '') as GenderOption,
       countryName: sanitizeString(pendingDraft?.countryName || 'Pakistan', MAX_COUNTRY_NAME),
-      walletBalancePkr: ACCOUNT_CREATE_BONUS_PKR,
-      accountBonusClaimed: true,
+      address: sanitizeString(pendingDraft?.address || '', MAX_ADDRESS),
+      walletBalancePkr: isVerifiedAdminUser
+        ? ADMIN_DAILY_GRANT_PKR
+        : rewardStatus.isActive
+          ? ACCOUNT_CREATE_BONUS_PKR
+          : 0,
+      accountBonusClaimed: !isVerifiedAdminUser && rewardStatus.isActive,
       profileBonusClaimed: false,
       buyTwoBonusClaimed: false,
       approvedProductsCount: 0,
@@ -900,6 +1267,9 @@ export async function ensureUserProfile(
       totalWithdrawnPkr: 0,
       dailyShoppingCount: 0,
       dailyShoppingEarnedPkr: 0,
+      mailOtpVerified: Boolean(pendingOtpAt),
+      mailOtpVerifiedAt: pendingOtpAt ? sanitizeString(pendingOtpAt, 40) : '',
+      ...(isVerifiedAdminUser ? { lastDailyAdminGrantDate: todayKey } : {}),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -908,18 +1278,30 @@ export async function ensureUserProfile(
     if (pendingDraft) {
       clearPendingProfileDraft(user.uid);
     }
+    if (pendingOtpAt) {
+      clearLocalMailOtpVerifiedAt(user.uid);
+    }
     await ensureInviteCodeIndexed(inviteCode, user.uid, displayName);
     if (isAdminUser && inviteCode !== OFFICIAL_INVITE_CODE) {
       await ensureInviteCodeIndexed(OFFICIAL_INVITE_CODE, user.uid, displayName || OFFICIAL_INVITER_NAME);
     }
 
     if (pendingCode) {
-      await linkUserToInviteCode({
-        inviteeUid: user.uid,
-        inviteeName: displayName,
-        inviteeEmail: email,
-        inviterCodeRaw: pendingCode,
-      });
+      const windowCheck = getAccountInviteWindow(
+        undefined,
+        user.metadata?.creationTime
+      );
+      if (windowCheck.allowed) {
+        await linkUserToInviteCode({
+          inviteeUid: user.uid,
+          inviteeName: displayName,
+          inviteeEmail: email,
+          inviterCodeRaw: pendingCode,
+          authCreationTime: user.metadata?.creationTime,
+        });
+      } else {
+        setPendingInviteCode('');
+      }
     }
 
     return {
@@ -932,6 +1314,29 @@ export async function ensureUserProfile(
   }
 }
 
+export async function markUserMailOtpVerified(
+  uid: string,
+  verifiedAtIso?: string
+): Promise<boolean> {
+  const safeIso = sanitizeString(verifiedAtIso || new Date().toISOString(), 40);
+  const userRef = doc(db, 'users', uid);
+  try {
+    const snap = await getDoc(userRef);
+    if (!snap.exists()) {
+      return false;
+    }
+    await updateDoc(userRef, {
+      mailOtpVerified: true,
+      mailOtpVerifiedAt: safeIso,
+      updatedAt: serverTimestamp(),
+    });
+    clearLocalMailOtpVerifiedAt(uid);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function updatePersonalInformation(
   uid: string,
   payload: {
@@ -941,6 +1346,7 @@ export async function updatePersonalInformation(
     birthDate: string;
     gender: GenderOption;
     countryName: string;
+    address?: string;
   }
 ): Promise<void> {
   const displayName = sanitizeString(payload.displayName, MAX_DISPLAY_NAME);
@@ -949,6 +1355,7 @@ export async function updatePersonalInformation(
   const birthDate = sanitizeString(payload.birthDate || '', MAX_BIRTH_DATE);
   const gender: GenderOption = payload.gender || '';
   const countryName = sanitizeString(payload.countryName || '', MAX_COUNTRY_NAME);
+  const address = sanitizeString(payload.address || '', MAX_ADDRESS);
   if (!displayName) return;
 
   const userRef = doc(db, 'users', uid);
@@ -960,6 +1367,7 @@ export async function updatePersonalInformation(
       birthDate,
       gender,
       countryName,
+      address,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -971,6 +1379,12 @@ export async function claimCompleteProfileBonus(
   uid: string,
   profile: UserProfile
 ): Promise<{ ok: boolean; message: string }> {
+  if (!getRewardSystemStatus().isActive) {
+    return {
+      ok: false,
+      message: `Reward expired. The new Reward System starts on ${REWARD_SYSTEM_START_LABEL}.`,
+    };
+  }
   if (profile.profileBonusClaimed) {
     return { ok: false, message: 'Verify Account & Complete Profile 50 PKR bonus already claimed.' };
   }
@@ -1001,6 +1415,13 @@ export async function collectDailyLoginToken(
   uid: string,
   profile: UserProfile
 ): Promise<{ ok: boolean; tokensAdded: number; message: string }> {
+  if (!getRewardSystemStatus().isActive) {
+    return {
+      ok: false,
+      tokensAdded: 0,
+      message: `Reward expired. Daily tokens start on ${REWARD_SYSTEM_START_LABEL}.`,
+    };
+  }
   const today = getTodayDateKey();
   if (profile.lastCheckInDate === today) {
     return {
@@ -1043,6 +1464,12 @@ export async function claimDailyTokensToPkr(
   uid: string,
   profile: UserProfile
 ): Promise<{ ok: boolean; message: string }> {
+  if (!getRewardSystemStatus().isActive) {
+    return {
+      ok: false,
+      message: `Reward expired. Token claims activate on ${REWARD_SYSTEM_START_LABEL}.`,
+    };
+  }
   if ((profile.loginTokens || 0) < DAILY_TOKENS_TARGET) {
     return {
       ok: false,
@@ -1128,14 +1555,17 @@ export async function reviewOrderProofAsAdmin(params: {
     let buyTwoBonusAwardedNow = false;
 
     if (decision === 'approved') {
-      // 1. Update buyer's approved product count & award 300 PKR when reaching 2 bought products
+      const rewardActive = getRewardSystemStatus().isActive;
+
+      // 1. Update buyer's approved product count & award 300 PKR when reaching 2 bought products (once reward system starts)
       const buyerRef = doc(db, 'users', proof.userId);
       const buyerSnap = await getDoc(buyerRef);
       if (buyerSnap.exists()) {
         const buyerData = buyerSnap.data() as UserProfile;
         const currentApproved = buyerData.approvedProductsCount || 0;
         const nextApproved = currentApproved + proof.quantity;
-        const shouldAwardBuyTwo = !buyerData.buyTwoBonusClaimed && nextApproved >= 2;
+        const shouldAwardBuyTwo =
+          rewardActive && !buyerData.buyTwoBonusClaimed && nextApproved >= 2;
 
         const buyerUpdate: Record<string, unknown> = {
           approvedProductsCount: nextApproved,
@@ -1151,7 +1581,7 @@ export async function reviewOrderProofAsAdmin(params: {
         await updateDoc(buyerRef, buyerUpdate);
       }
 
-      // 2. Update referral progress & award 500 PKR to inviter at 10 approved products
+      // 2. Update referral progress & award 500 PKR to inviter at 10 approved products (once reward system starts)
       const referralRef = doc(db, 'referrals', proof.userId);
       const referralSnap = await getDoc(referralRef);
       if (referralSnap.exists()) {
@@ -1164,7 +1594,7 @@ export async function reviewOrderProofAsAdmin(params: {
           updatedAt: serverTimestamp(),
         });
 
-        if (refData.status !== 'accepted' && nextStatus === 'accepted') {
+        if (rewardActive && refData.status !== 'accepted' && nextStatus === 'accepted') {
           referralAcceptedNow = true;
           let targetInviterUid = refData.inviterUid;
           if (targetInviterUid === OFFICIAL_INVITER_UID) {
@@ -1428,6 +1858,7 @@ export async function publishAffiliateProduct(params: {
   affiliateUrl: string;
   imageUrl: string;
   description: string;
+  published?: boolean;
 }): Promise<string> {
   const productId = `mz_${params.marketplace.toLowerCase()}_${Date.now().toString(36)}`;
   const prodRef = doc(db, 'products', productId);
@@ -1435,6 +1866,7 @@ export async function publishAffiliateProduct(params: {
     sanitizeProductCode(params.productCode) ||
     `MZ-${params.marketplace.slice(0, 2).toUpperCase()}-${Date.now().toString(36).toUpperCase().slice(-4)}`;
   const { resolvedUrl } = resolveDriveImageUrl(params.imageUrl);
+  const isPublished = params.published !== undefined ? Boolean(params.published) : true;
 
   try {
     await setDoc(prodRef, {
@@ -1447,7 +1879,7 @@ export async function publishAffiliateProduct(params: {
       affiliateUrl: sanitizeString(params.affiliateUrl, MAX_URL),
       imageUrl: sanitizeString(resolvedUrl, MAX_URL),
       description: sanitizeString(params.description, MAX_DESC),
-      published: true,
+      published: isPublished,
       createdBy: params.adminUid,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -1521,6 +1953,122 @@ export async function deletePublishedProduct(productId: string): Promise<void> {
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `products/${productId}`);
   }
+}
+
+export async function saveCuratedCatalogItem(params: {
+  adminUid: string;
+  productId: string;
+  productCode: string;
+  title: string;
+  marketplace: MarketplaceType;
+  category: ProductCategory;
+  price: number;
+  compareAtPrice: number;
+  affiliateUrl: string;
+  imageUrl: string;
+  imageFocusClass?: string;
+  description: string;
+  published: boolean;
+  deleted: boolean;
+}): Promise<void> {
+  const ref = doc(db, 'curatedCatalog', params.productId);
+  const cleanedCode =
+    sanitizeProductCode(params.productCode) ||
+    sanitizeProductCode(params.productId) ||
+    'MZ-CUR';
+  const { resolvedUrl } = resolveDriveImageUrl(params.imageUrl);
+
+  const payload: Record<string, unknown> = {
+    productCode: cleanedCode,
+    title: sanitizeString(params.title, MAX_TITLE),
+    marketplace: params.marketplace,
+    category: params.category,
+    price: Number(Math.max(0.01, params.price).toFixed(2)),
+    compareAtPrice: Number(Math.max(0, params.compareAtPrice).toFixed(2)),
+    affiliateUrl: sanitizeString(params.affiliateUrl, MAX_URL),
+    imageUrl: sanitizeString(resolvedUrl, MAX_URL),
+    description: sanitizeString(params.description, MAX_DESC),
+    published: Boolean(params.published),
+    deleted: Boolean(params.deleted),
+    updatedBy: params.adminUid,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (params.imageFocusClass && params.imageFocusClass.trim()) {
+    payload.imageFocusClass = sanitizeString(params.imageFocusClass, 60);
+  }
+
+  try {
+    await setDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `curatedCatalog/${params.productId}`);
+  }
+}
+
+export async function toggleCuratedCatalogVisibility(
+  adminUid: string,
+  item: AffiliateProduct
+): Promise<void> {
+  await saveCuratedCatalogItem({
+    adminUid,
+    productId: item.id,
+    productCode: item.productCode,
+    title: item.title,
+    marketplace: item.marketplace,
+    category: item.category,
+    price: item.price,
+    compareAtPrice: item.compareAtPrice,
+    affiliateUrl: item.affiliateUrl,
+    imageUrl: item.imageUrl,
+    imageFocusClass: item.imageFocusClass,
+    description: item.description,
+    published: !item.published,
+    deleted: false,
+  });
+}
+
+export async function deleteCuratedCatalogItem(
+  adminUid: string,
+  item: AffiliateProduct
+): Promise<void> {
+  await saveCuratedCatalogItem({
+    adminUid,
+    productId: item.id,
+    productCode: item.productCode,
+    title: item.title,
+    marketplace: item.marketplace,
+    category: item.category,
+    price: item.price,
+    compareAtPrice: item.compareAtPrice,
+    affiliateUrl: item.affiliateUrl,
+    imageUrl: item.imageUrl,
+    imageFocusClass: item.imageFocusClass,
+    description: item.description,
+    published: false,
+    deleted: true,
+  });
+}
+
+export async function restoreCuratedCatalogItem(
+  adminUid: string,
+  item: AffiliateProduct
+): Promise<void> {
+  await saveCuratedCatalogItem({
+    adminUid,
+    productId: item.id,
+    productCode: item.productCode,
+    title: item.title,
+    marketplace: item.marketplace,
+    category: item.category,
+    price: item.price,
+    compareAtPrice: item.compareAtPrice,
+    affiliateUrl: item.affiliateUrl,
+    imageUrl: item.imageUrl,
+    imageFocusClass: item.imageFocusClass,
+    description: item.description,
+    published: true,
+    deleted: false,
+  });
 }
 
 export async function createSupportTicket(params: {
